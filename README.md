@@ -1,7 +1,23 @@
-# GCP Data & AI CoE — Architecture Explorer & Live Demo
+# GCP Data & AI CoE — Live Pipeline Demo
 
-A starter-kit Streamlit app for the Incedo Data Technology CoE (GCP track).
-Shows the end-to-end GCP reference architecture and a working live-data demo.
+A working prototype for the Incedo Data Technology CoE (GCP track). Runs
+sample or uploaded data through a real ingestion → bronze → silver → gold →
+ML → analytics pipeline, with an optional mode that swaps the simulated
+steps for genuine Pub/Sub, Cloud Storage, and BigQuery calls.
+
+## Project structure
+
+```
+app.py              Streamlit UI (pages, forms, charts)
+pipeline.py          Pure pipeline logic (no Streamlit dependency) - transform,
+                      aggregate, ML, and the real-GCP call wrappers
+tests/test_pipeline.py  Unit tests for pipeline.py (pytest)
+terraform/            Infrastructure as code: bucket, dataset, topic,
+                      subscription, service account and IAM bindings
+requirements.txt
+Dockerfile            For Cloud Run deployment
+GCP_SETUP.md          One-time GCP setup + how to enable real GCP mode
+```
 
 ## Run locally
 
@@ -10,42 +26,76 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Enable the live BigQuery demo (optional)
+Works immediately with generated sample data — no GCP project required.
 
-The app runs fine with sample data out of the box. To pull live results from
-a public BigQuery dataset instead:
+## Run the tests
 
 ```bash
-gcloud auth application-default login
-export GOOGLE_CLOUD_PROJECT=your-billing-project-id
-streamlit run app.py
+pip install -r requirements.txt
+pytest tests/
 ```
 
-Then enter your project ID in the "Live demo" page and click
-**Run live BigQuery query**. Public datasets don't cost anything to store —
-you're only billed for the (tiny) query bytes scanned.
+Tests cover the pandas transformation logic, the ML anomaly/forecast stage,
+and schema validation — all independent of Streamlit and GCP credentials.
 
-## Deploy to Cloud Run
+## Enable real GCP infrastructure (optional)
+
+By default, ingestion and storage are simulated in-memory so the demo runs
+instantly. To have the pipeline genuinely write to Cloud Storage, publish
+and pull from Pub/Sub, and round-trip through BigQuery:
+
+1. Provision resources with Terraform — see `terraform/` and `GCP_SETUP.md`
+2. In the app, expand **"Real GCP infrastructure (optional)"**, check the
+   box, and fill in your project ID, bucket, dataset, and (optionally)
+   topic/subscription
+3. Run the pipeline — each stage shows a real `gs://` URI or BigQuery table
+   reference confirming the call actually happened
+
+Full setup commands (`gcloud`, `terraform apply`, IAM roles) are in
+`GCP_SETUP.md`.
+
+## Access control (optional)
+
+Set an `APP_PASSWORD` in `.streamlit/secrets.toml` (local) or your hosting
+platform's secrets manager to gate access. Unset by default, which is fine
+for an internal demo but not recommended once real GCP credentials are wired
+in and the app is reachable publicly.
+
+## Deploy to Cloud Run (recommended for real-GCP mode)
 
 ```bash
+cd terraform
+terraform init
+terraform apply -var="project_id=YOUR_PROJECT" -var="bucket_name=YOUR_UNIQUE_BUCKET"
+# note the service_account_email output
+
+cd ..
 gcloud run deploy gcp-coe-demo \
   --source . \
   --region us-central1 \
+  --service-account YOUR_SERVICE_ACCOUNT_EMAIL \
   --allow-unauthenticated \
-  --set-env-vars GOOGLE_CLOUD_PROJECT=your-billing-project-id
+  --set-env-vars GOOGLE_CLOUD_PROJECT=YOUR_PROJECT
 ```
 
-Add a `Dockerfile` if you want a custom container, or let Cloud Run's
-buildpacks handle the Streamlit app automatically (it will detect
-`requirements.txt` and run `streamlit run app.py` if you add a `Procfile`
-with `web: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0`).
+Using the Terraform-provisioned service account means no key file and no
+personal credentials are needed at runtime — Cloud Run authenticates
+automatically.
+
+## Deploy to Streamlit Community Cloud (fastest, simulated mode only)
+
+Push to GitHub, then create an app at share.streamlit.io pointing at
+`app.py`. Fine for demos in simulated mode; for real-GCP mode, Cloud Run is
+the better host since it can use a service account instead of personal
+credentials in a third-party platform.
 
 ## Extending this as a CoE asset
 
-- **Architecture layers page**: swap in your team's actual reference
-  architecture and reusable pattern docs per layer.
-- **Live demo page**: replace the sample query with a real pipeline query
-  from a project-specific dataset once one exists.
-- **Reusable asset catalog page**: point it at a real source (Google Sheet,
-  Firestore, or BigQuery table) instead of the in-memory session list, so
-  the catalog persists across users.
+- **Data sources**: currently sample-generated or CSV upload only. Point it
+  at a real Cloud SQL instance or client dataset once one is identified.
+- **Reusable asset catalog**: currently persisted to a local JSON file,
+  which survives refreshes on a single running instance but isn't durable
+  across multiple Cloud Run instances. Swap for Firestore or a BigQuery
+  table for multi-instance durability.
+- **ML platform**: currently anomaly detection + linear forecast. A RAG/LLM
+  use case (Vertex AI Search) would extend this layer further.
