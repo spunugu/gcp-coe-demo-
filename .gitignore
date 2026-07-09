@@ -6,3 +6,8 @@ venv/
 .DS_Store
 *.egg-info/
 .streamlit/secrets.toml
+asset_catalog.json
+.pytest_cache/
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/terraform.tfvars
