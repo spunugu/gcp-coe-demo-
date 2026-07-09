@@ -2,9 +2,9 @@
 GCP Data & AI CoE - Live Pipeline Demo
 ----------------------------------------
 A usable, demoable prototype for the Incedo Data Technology CoE (GCP track).
-Runs a real (simulated) ingestion -> bronze -> silver -> gold -> analytics
-pipeline against sample or uploaded data, so it can be demoed to a manager
-with zero GCP setup required.
+Runs sample or uploaded data (or optionally real BigQuery data) through a
+full ingestion -> bronze -> silver -> gold -> ML -> analytics pipeline,
+with a data quality / lineage audit trail at every stage.
 
 Run locally:
     pip install -r requirements.txt
@@ -24,13 +24,27 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------------------------------------------------------------------
-# Sample data generator (stands in for a real source system)
-# ---------------------------------------------------------------------------
-
 REGIONS = ["North America", "EMEA", "APAC", "LATAM"]
 PRODUCTS = ["Data Platform", "Analytics Suite", "ML Toolkit", "Streaming Connector", "BI Dashboard"]
 
+# ---------------------------------------------------------------------------
+# Lineage / audit trail helper
+# ---------------------------------------------------------------------------
+
+def log_stage(name, rows_before, rows_after, notes):
+    st.session_state.setdefault("lineage", [])
+    st.session_state["lineage"].append({
+        "stage": name,
+        "rows_before": rows_before,
+        "rows_after": rows_after,
+        "notes": notes,
+        "timestamp": pd.Timestamp.now().strftime("%H:%M:%S"),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Sample data generator (stands in for a real source system)
+# ---------------------------------------------------------------------------
 
 def generate_sample_data(n=800, seed=7):
     rng = np.random.default_rng(seed)
@@ -51,17 +65,27 @@ def generate_sample_data(n=800, seed=7):
     df.loc[null_idx, "unit_price"] = np.nan
     bad_qty_idx = rng.choice(df.index, size=int(n * 0.01), replace=False)
     df.loc[bad_qty_idx, "quantity"] = -1
+    # Inject a handful of genuine revenue outliers for the anomaly stage to catch
+    spike_idx = rng.choice(df.index, size=6, replace=False)
+    df.loc[spike_idx, "quantity"] = rng.integers(150, 300, size=6)
     return df.sample(frac=1, random_state=seed).reset_index(drop=True)
 
 
+def fetch_bigquery_data(project_id, query):
+    from google.cloud import bigquery
+    client = bigquery.Client(project=project_id)
+    return client.query(query).to_dataframe()
+
+
 # ---------------------------------------------------------------------------
-# Pipeline stages (real pandas transformations, mirrors the medallion pattern)
+# Pipeline stages
 # ---------------------------------------------------------------------------
 
 def run_bronze(raw_df):
     df = raw_df.copy()
     df["_ingested_at"] = pd.Timestamp.now()
-    return df, {"rows_ingested": len(df)}
+    log_stage("Bronze (raw landing)", len(raw_df), len(df), "Raw data landed as-is, ingestion timestamp added.")
+    return df
 
 
 def run_silver(bronze_df):
@@ -70,10 +94,10 @@ def run_silver(bronze_df):
     df = df.drop_duplicates(subset=["order_id"])
     dupes_removed = before - len(df)
 
-    nulls_before = df["unit_price"].isna().sum()
+    nulls_before = int(df["unit_price"].isna().sum())
     df["unit_price"] = df["unit_price"].fillna(df["unit_price"].median())
 
-    bad_qty = (df["quantity"] <= 0).sum()
+    bad_qty = int((df["quantity"] <= 0).sum())
     df = df[df["quantity"] > 0]
 
     df["order_date"] = pd.to_datetime(df["order_date"])
@@ -81,10 +105,14 @@ def run_silver(bronze_df):
 
     stats = {
         "duplicates_removed": int(dupes_removed),
-        "nulls_filled": int(nulls_before),
-        "invalid_rows_dropped": int(bad_qty),
+        "nulls_filled": nulls_before,
+        "invalid_rows_dropped": bad_qty,
         "rows_after_cleaning": len(df),
     }
+    log_stage(
+        "Silver (cleaned)", before, len(df),
+        f"Removed {dupes_removed} duplicates, filled {nulls_before} nulls, dropped {bad_qty} invalid rows.",
+    )
     return df, stats
 
 
@@ -102,7 +130,7 @@ def run_gold(silver_df):
     ).sort_values("total_revenue", ascending=False)
 
     df["month"] = df["order_date"].dt.to_period("M").astype(str)
-    monthly = df.groupby("month", as_index=False).agg(total_revenue=("revenue", "sum"))
+    monthly = df.groupby("month", as_index=False).agg(total_revenue=("revenue", "sum")).sort_values("month")
 
     kpis = {
         "total_revenue": df["revenue"].sum(),
@@ -110,7 +138,39 @@ def run_gold(silver_df):
         "avg_order_value": df["revenue"].mean(),
         "top_region": by_region.iloc[0]["region"] if len(by_region) else "-",
     }
+    log_stage("Gold (aggregated)", len(df), len(by_region) + len(by_product), f"Built {len(by_region)} region and {len(by_product)} product rollups.")
     return by_region, by_product, monthly, kpis
+
+
+def run_ml(silver_df, monthly_df):
+    df = silver_df.copy()
+
+    # Anomaly detection on order revenue using z-score (simple, dependency-free)
+    mean, std = df["revenue"].mean(), df["revenue"].std()
+    df["revenue_zscore"] = (df["revenue"] - mean) / std if std > 0 else 0
+    anomalies = df[df["revenue_zscore"].abs() > 3][
+        ["order_id", "region", "product", "quantity", "unit_price", "revenue", "revenue_zscore"]
+    ].sort_values("revenue_zscore", ascending=False)
+
+    # Simple forecast: linear regression on monthly revenue trend
+    forecast = pd.DataFrame()
+    if len(monthly_df) >= 3:
+        from sklearn.linear_model import LinearRegression
+        m = monthly_df.copy().reset_index(drop=True)
+        m["t"] = np.arange(len(m))
+        model = LinearRegression().fit(m[["t"]], m["total_revenue"])
+        future_t = np.arange(len(m), len(m) + 2)
+        future_preds = model.predict(future_t.reshape(-1, 1))
+        future_months = pd.period_range(
+            pd.Period(m["month"].iloc[-1]) + 1, periods=2, freq="M"
+        ).astype(str)
+        forecast = pd.DataFrame({"month": future_months, "predicted_revenue": future_preds})
+
+    log_stage(
+        "ML platform (anomaly detection + forecast)", len(df), len(anomalies),
+        f"Flagged {len(anomalies)} revenue outliers (|z| > 3); forecasted {len(forecast)} future months.",
+    )
+    return anomalies, forecast
 
 
 # ---------------------------------------------------------------------------
@@ -126,30 +186,61 @@ st.sidebar.markdown("---")
 st.sidebar.caption("Incedo Data Technology CoE — GCP track")
 
 # ---------------------------------------------------------------------------
-# Live pipeline demo page (flagship page)
+# Live pipeline demo page
 # ---------------------------------------------------------------------------
 
 if page == "Live pipeline demo":
     st.title("Live pipeline demo")
     st.markdown(
-        "Runs sample data through a real ingestion → bronze → silver → gold → "
-        "analytics pipeline, mirroring the GCP reference architecture "
-        "(Pub/Sub/Dataflow → Cloud Storage/BigLake → Dataflow/BigQuery → "
-        "BigQuery/Looker)."
+        "Runs data through a real ingestion → bronze → silver → gold → ML → "
+        "analytics pipeline, mirroring the GCP reference architecture."
     )
 
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        uploaded = st.file_uploader("Upload your own CSV (optional)", type=["csv"])
-    with col_b:
-        instant = st.checkbox("Instant mode (skip animation)", value=False)
+    with st.expander("Data source", expanded=True):
+        source_mode = st.radio(
+            "Choose data source",
+            ["Sample data (instant, no setup)", "Upload CSV", "Live BigQuery query (requires GCP credentials)"],
+            horizontal=True,
+        )
 
-    if uploaded is not None:
-        raw_df = pd.read_csv(uploaded)
-        st.caption(f"Loaded {len(raw_df)} rows from {uploaded.name}")
-    else:
-        raw_df = generate_sample_data()
-        st.caption(f"Using generated sample sales data ({len(raw_df)} rows, includes duplicates/nulls/bad values on purpose)")
+        raw_df = None
+        if source_mode == "Upload CSV":
+            uploaded = st.file_uploader("Upload CSV", type=["csv"])
+            if uploaded is not None:
+                raw_df = pd.read_csv(uploaded)
+                st.caption(f"Loaded {len(raw_df)} rows from {uploaded.name}")
+
+        elif source_mode == "Live BigQuery query (requires GCP credentials)":
+            project_id = st.text_input("GCP project ID")
+            query = st.text_area(
+                "SQL query",
+                value=(
+                    "SELECT station_id, COUNT(*) AS trip_count\n"
+                    "FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`\n"
+                    "WHERE start_time BETWEEN '2019-01-01' AND '2019-01-31'\n"
+                    "GROUP BY station_id"
+                ),
+                height=120,
+            )
+            st.caption(
+                "Note: this sample query's schema differs from the sales pipeline below. "
+                "Point it at a table with order_id/region/product/quantity/unit_price/order_date "
+                "columns for the full pipeline to run against it."
+            )
+            if st.button("Fetch from BigQuery"):
+                try:
+                    raw_df = fetch_bigquery_data(project_id, query)
+                    st.success(f"Fetched {len(raw_df)} rows from BigQuery.")
+                except Exception as e:
+                    st.error(f"Could not reach BigQuery ({e}). Falling back to sample data.")
+                    raw_df = generate_sample_data()
+
+        if raw_df is None:
+            raw_df = generate_sample_data()
+            if source_mode == "Sample data (instant, no setup)":
+                st.caption(f"Using generated sample sales data ({len(raw_df)} rows, includes duplicates/nulls/outliers on purpose)")
+
+    instant = st.checkbox("Instant mode (skip animation)", value=False)
 
     with st.expander("Preview raw data"):
         st.dataframe(raw_df.head(20), use_container_width=True)
@@ -157,18 +248,27 @@ if page == "Live pipeline demo":
     run = st.button("Run pipeline", type="primary")
 
     if run:
+        st.session_state["lineage"] = []
+        required_cols = {"order_id", "region", "product", "quantity", "unit_price", "order_date"}
+        if not required_cols.issubset(raw_df.columns):
+            st.error(
+                f"This dataset is missing columns the pipeline needs: "
+                f"{sorted(required_cols - set(raw_df.columns))}. Falling back to sample data."
+            )
+            raw_df = generate_sample_data()
+
         delay = 0 if instant else 0.7
         progress = st.progress(0, text="Starting pipeline...")
 
-        with st.status("Stage 1/4: Ingestion", expanded=True) as status:
+        with st.status("Stage 1/5: Ingestion", expanded=True) as status:
             st.write("Simulating Pub/Sub → Dataflow ingestion into Cloud Storage.")
             time.sleep(delay)
-            bronze_df, bronze_stats = run_bronze(raw_df)
-            st.write(f"Ingested **{bronze_stats['rows_ingested']}** rows into the bronze zone.")
-            status.update(label="Stage 1/4: Ingestion — done", state="complete")
-        progress.progress(25, text="Bronze zone landed")
+            bronze_df = run_bronze(raw_df)
+            st.write(f"Ingested **{len(bronze_df)}** rows into the bronze zone.")
+            status.update(label="Stage 1/5: Ingestion — done", state="complete")
+        progress.progress(20, text="Bronze zone landed")
 
-        with st.status("Stage 2/4: Bronze → Silver (cleaning)", expanded=True) as status:
+        with st.status("Stage 2/5: Bronze → Silver (cleaning)", expanded=True) as status:
             st.write("Deduplicating, filling nulls, dropping invalid rows, casting types.")
             time.sleep(delay)
             silver_df, silver_stats = run_silver(bronze_df)
@@ -177,23 +277,31 @@ if page == "Live pipeline demo":
             c2.metric("Nulls filled", silver_stats["nulls_filled"])
             c3.metric("Invalid rows dropped", silver_stats["invalid_rows_dropped"])
             c4.metric("Clean rows", silver_stats["rows_after_cleaning"])
-            status.update(label="Stage 2/4: Silver zone — done", state="complete")
-        progress.progress(55, text="Silver zone cleaned")
+            status.update(label="Stage 2/5: Silver zone — done", state="complete")
+        progress.progress(40, text="Silver zone cleaned")
 
-        with st.status("Stage 3/4: Silver → Gold (aggregation)", expanded=True) as status:
+        with st.status("Stage 3/5: Silver → Gold (aggregation)", expanded=True) as status:
             st.write("Aggregating into business-ready tables (BigQuery-style).")
             time.sleep(delay)
             by_region, by_product, monthly, kpis = run_gold(silver_df)
             st.write(f"Built **{len(by_region)}** region rollups and **{len(by_product)}** product rollups.")
-            status.update(label="Stage 3/4: Gold zone — done", state="complete")
-        progress.progress(80, text="Gold tables built")
+            status.update(label="Stage 3/5: Gold zone — done", state="complete")
+        progress.progress(60, text="Gold tables built")
 
-        with st.status("Stage 4/4: Analytics & BI", expanded=True) as status:
+        with st.status("Stage 4/5: ML platform (anomaly detection + forecast)", expanded=True) as status:
+            st.write("Flagging revenue outliers and forecasting the next 2 months (Vertex AI-style).")
             time.sleep(delay)
-            status.update(label="Stage 4/4: Dashboard ready", state="complete")
+            anomalies, forecast = run_ml(silver_df, monthly)
+            st.write(f"Flagged **{len(anomalies)}** anomalous orders; forecasted **{len(forecast)}** future months.")
+            status.update(label="Stage 4/5: ML platform — done", state="complete")
+        progress.progress(80, text="ML stage complete")
+
+        with st.status("Stage 5/5: Analytics & BI", expanded=True) as status:
+            time.sleep(delay)
+            status.update(label="Stage 5/5: Dashboard ready", state="complete")
         progress.progress(100, text="Pipeline complete")
 
-        st.success("Pipeline complete — dashboard below is built from the gold tables.")
+        st.success("Pipeline complete — dashboard below is built from the gold and ML outputs.")
         st.divider()
 
         st.subheader("Business dashboard")
@@ -211,8 +319,28 @@ if page == "Live pipeline demo":
             fig2 = px.pie(by_product, names="product", values="total_revenue", title="Revenue by product")
             st.plotly_chart(fig2, use_container_width=True)
 
-        fig3 = px.line(monthly.sort_values("month"), x="month", y="total_revenue", markers=True, title="Monthly revenue trend")
+        if len(forecast):
+            trend_df = pd.concat([
+                monthly.assign(kind="Actual").rename(columns={"total_revenue": "revenue"}),
+                forecast.assign(kind="Forecast").rename(columns={"predicted_revenue": "revenue"}),
+            ], ignore_index=True)
+            fig3 = px.line(trend_df, x="month", y="revenue", color="kind", markers=True, title="Monthly revenue: actual + forecast")
+        else:
+            fig3 = px.line(monthly, x="month", y="total_revenue", markers=True, title="Monthly revenue trend")
         st.plotly_chart(fig3, use_container_width=True)
+
+        st.subheader("ML platform outputs")
+        m1, m2 = st.tabs(["Anomalies detected", "Revenue forecast"])
+        with m1:
+            if len(anomalies):
+                st.dataframe(anomalies, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No anomalies above the |z| > 3 threshold in this run.")
+        with m2:
+            if len(forecast):
+                st.dataframe(forecast, use_container_width=True, hide_index=True)
+            else:
+                st.caption("Not enough monthly history to forecast (need 3+ months).")
 
         st.subheader("Gold tables")
         t1, t2 = st.tabs(["By region", "By product"])
@@ -224,6 +352,10 @@ if page == "Live pipeline demo":
         csv_buf = io.StringIO()
         by_region.to_csv(csv_buf, index=False)
         st.download_button("Download region rollup (CSV)", csv_buf.getvalue(), file_name="gold_region_rollup.csv", mime="text/csv")
+
+        st.subheader("Data quality & lineage audit")
+        st.caption("Every stage logs its row counts and what it did, for governance and traceability.")
+        st.dataframe(pd.DataFrame(st.session_state.get("lineage", [])), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
 # Architecture overview page
