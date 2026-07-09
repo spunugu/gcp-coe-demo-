@@ -3,5 +3,7 @@ pandas>=2.0
 numpy>=1.24
 plotly>=5.20
 google-cloud-bigquery>=3.20
+google-cloud-storage>=2.16
+google-cloud-pubsub>=2.21
 db-dtypes>=1.2
 scikit-learn>=1.3
