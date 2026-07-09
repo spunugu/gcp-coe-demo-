@@ -78,17 +78,68 @@ def fetch_bigquery_data(project_id, query):
 
 
 # ---------------------------------------------------------------------------
+# Real GCP infrastructure calls (Pub/Sub, Cloud Storage, BigQuery)
+# Used only when "Real GCP mode" is enabled and credentials are configured.
+# ---------------------------------------------------------------------------
+
+def real_publish_to_pubsub(project_id, topic_id, df, sample_n=20):
+    import json
+    from google.cloud import pubsub_v1
+    publisher = pubsub_v1.PublisherClient()
+    topic_path = publisher.topic_path(project_id, topic_id)
+    message_ids = []
+    sample = df.head(sample_n)
+    for _, row in sample.iterrows():
+        payload = json.dumps(row.astype(str).to_dict()).encode("utf-8")
+        future = publisher.publish(topic_path, payload)
+        message_ids.append(future.result(timeout=30))
+    return message_ids
+
+
+def real_write_to_gcs(project_id, bucket_name, blob_path, df):
+    from google.cloud import storage
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+    blob.upload_from_string(df.to_csv(index=False), content_type="text/csv")
+    return f"gs://{bucket_name}/{blob_path}"
+
+
+def real_load_to_bigquery(project_id, dataset_id, table_id, df):
+    from google.cloud import bigquery
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.{dataset_id}.{table_id}"
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+    job = client.load_table_from_dataframe(df, table_ref, job_config=job_config)
+    job.result()
+    return table_ref, job.output_rows
+
+
+def real_read_from_bigquery(project_id, dataset_id, table_id):
+    from google.cloud import bigquery
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.{dataset_id}.{table_id}"
+    return client.query(f"SELECT * FROM `{table_ref}`").to_dataframe()
+
+
+# ---------------------------------------------------------------------------
 # Pipeline stages
 # ---------------------------------------------------------------------------
 
-def run_bronze(raw_df):
+def run_bronze(raw_df, gcp_cfg=None):
     df = raw_df.copy()
     df["_ingested_at"] = pd.Timestamp.now()
-    log_stage("Bronze (raw landing)", len(raw_df), len(df), "Raw data landed as-is, ingestion timestamp added.")
-    return df
+    note = "Raw data landed as-is, ingestion timestamp added."
+    gcs_uri = None
+    if gcp_cfg and gcp_cfg.get("enabled"):
+        ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        gcs_uri = real_write_to_gcs(gcp_cfg["project_id"], gcp_cfg["bucket"], f"bronze/raw_{ts}.csv", df)
+        note += f" Written to real GCS: {gcs_uri}"
+    log_stage("Bronze (raw landing)", len(raw_df), len(df), note)
+    return df, gcs_uri
 
 
-def run_silver(bronze_df):
+def run_silver(bronze_df, gcp_cfg=None):
     df = bronze_df.copy()
     before = len(df)
     df = df.drop_duplicates(subset=["order_id"])
@@ -109,14 +160,17 @@ def run_silver(bronze_df):
         "invalid_rows_dropped": bad_qty,
         "rows_after_cleaning": len(df),
     }
-    log_stage(
-        "Silver (cleaned)", before, len(df),
-        f"Removed {dupes_removed} duplicates, filled {nulls_before} nulls, dropped {bad_qty} invalid rows.",
-    )
-    return df, stats
+    note = f"Removed {dupes_removed} duplicates, filled {nulls_before} nulls, dropped {bad_qty} invalid rows."
+    gcs_uri = None
+    if gcp_cfg and gcp_cfg.get("enabled"):
+        ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        gcs_uri = real_write_to_gcs(gcp_cfg["project_id"], gcp_cfg["bucket"], f"silver/cleaned_{ts}.csv", df)
+        note += f" Written to real GCS: {gcs_uri}"
+    log_stage("Silver (cleaned)", before, len(df), note)
+    return df, stats, gcs_uri
 
 
-def run_gold(silver_df):
+def run_gold(silver_df, gcp_cfg=None):
     df = silver_df.copy()
     by_region = df.groupby("region", as_index=False).agg(
         total_revenue=("revenue", "sum"),
@@ -138,8 +192,15 @@ def run_gold(silver_df):
         "avg_order_value": df["revenue"].mean(),
         "top_region": by_region.iloc[0]["region"] if len(by_region) else "-",
     }
-    log_stage("Gold (aggregated)", len(df), len(by_region) + len(by_product), f"Built {len(by_region)} region and {len(by_product)} product rollups.")
-    return by_region, by_product, monthly, kpis
+    note = f"Built {len(by_region)} region and {len(by_product)} product rollups."
+    bq_ref = None
+    if gcp_cfg and gcp_cfg.get("enabled"):
+        bq_ref, rows_loaded = real_load_to_bigquery(gcp_cfg["project_id"], gcp_cfg["dataset"], "gold_region_rollup", by_region)
+        note += f" Loaded {rows_loaded} rows into real BigQuery table {bq_ref}."
+        by_region = real_read_from_bigquery(gcp_cfg["project_id"], gcp_cfg["dataset"], "gold_region_rollup")
+        by_region = by_region.sort_values("total_revenue", ascending=False)
+    log_stage("Gold (aggregated)", len(df), len(by_region) + len(by_product), note)
+    return by_region, by_product, monthly, kpis, bq_ref
 
 
 def run_ml(silver_df, monthly_df):
@@ -240,6 +301,33 @@ if page == "Live pipeline demo":
             if source_mode == "Sample data (instant, no setup)":
                 st.caption(f"Using generated sample sales data ({len(raw_df)} rows, includes duplicates/nulls/outliers on purpose)")
 
+    with st.expander("Real GCP infrastructure (optional)"):
+        st.caption(
+            "Off by default so the demo runs instantly. Turn this on to have the "
+            "pipeline actually write to real Cloud Storage and BigQuery (and "
+            "publish sample messages to Pub/Sub) instead of simulating those steps."
+        )
+        gcp_enabled = st.checkbox("Use real GCP infrastructure for this run", value=False)
+        gcp_cfg = {"enabled": False}
+        if gcp_enabled:
+            gcol1, gcol2 = st.columns(2)
+            with gcol1:
+                gcp_project = st.text_input("GCP project ID", key="gcp_project")
+                gcp_bucket = st.text_input("Cloud Storage bucket name", key="gcp_bucket")
+            with gcol2:
+                gcp_dataset = st.text_input("BigQuery dataset ID", key="gcp_dataset")
+                gcp_topic = st.text_input("Pub/Sub topic ID (optional)", key="gcp_topic")
+            gcp_cfg = {
+                "enabled": True,
+                "project_id": gcp_project,
+                "bucket": gcp_bucket,
+                "dataset": gcp_dataset,
+                "topic": gcp_topic,
+            }
+            if not (gcp_project and gcp_bucket and gcp_dataset):
+                st.warning("Enter project ID, bucket, and dataset to enable real GCP calls.")
+                gcp_cfg["enabled"] = False
+
     instant = st.checkbox("Instant mode (skip animation)", value=False)
 
     with st.expander("Preview raw data"):
@@ -259,19 +347,44 @@ if page == "Live pipeline demo":
 
         delay = 0 if instant else 0.7
         progress = st.progress(0, text="Starting pipeline...")
+        using_real = gcp_cfg.get("enabled", False)
 
         with st.status("Stage 1/5: Ingestion", expanded=True) as status:
-            st.write("Simulating Pub/Sub → Dataflow ingestion into Cloud Storage.")
-            time.sleep(delay)
-            bronze_df = run_bronze(raw_df)
-            st.write(f"Ingested **{len(bronze_df)}** rows into the bronze zone.")
-            status.update(label="Stage 1/5: Ingestion — done", state="complete")
+            try:
+                if using_real:
+                    if gcp_cfg.get("topic"):
+                        st.write(f"Publishing sample messages to real Pub/Sub topic `{gcp_cfg['topic']}`...")
+                        msg_ids = real_publish_to_pubsub(gcp_cfg["project_id"], gcp_cfg["topic"], raw_df)
+                        st.write(f"Published **{len(msg_ids)}** real Pub/Sub messages. Sample message ID: `{msg_ids[0]}`")
+                    else:
+                        st.write("No Pub/Sub topic given — writing straight to real Cloud Storage.")
+                    time.sleep(delay)
+                    bronze_df, gcs_uri = run_bronze(raw_df, gcp_cfg)
+                    st.success(f"Real write confirmed: {gcs_uri}")
+                else:
+                    st.write("Simulating Pub/Sub → Dataflow ingestion into Cloud Storage.")
+                    time.sleep(delay)
+                    bronze_df, _ = run_bronze(raw_df, None)
+                st.write(f"Ingested **{len(bronze_df)}** rows into the bronze zone.")
+                status.update(label="Stage 1/5: Ingestion — done", state="complete")
+            except Exception as e:
+                st.error(f"Real GCP call failed ({e}). Falling back to simulated ingestion for this run.")
+                using_real = False
+                bronze_df, _ = run_bronze(raw_df, None)
+                status.update(label="Stage 1/5: Ingestion — done (simulated fallback)", state="complete")
         progress.progress(20, text="Bronze zone landed")
 
         with st.status("Stage 2/5: Bronze → Silver (cleaning)", expanded=True) as status:
             st.write("Deduplicating, filling nulls, dropping invalid rows, casting types.")
             time.sleep(delay)
-            silver_df, silver_stats = run_silver(bronze_df)
+            try:
+                silver_df, silver_stats, silver_gcs_uri = run_silver(bronze_df, gcp_cfg if using_real else None)
+                if using_real and silver_gcs_uri:
+                    st.success(f"Real write confirmed: {silver_gcs_uri}")
+            except Exception as e:
+                st.error(f"Real GCP call failed ({e}). Continuing with local computation only.")
+                silver_df, silver_stats, _ = run_silver(bronze_df, None)
+                using_real = False
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Duplicates removed", silver_stats["duplicates_removed"])
             c2.metric("Nulls filled", silver_stats["nulls_filled"])
@@ -283,7 +396,13 @@ if page == "Live pipeline demo":
         with st.status("Stage 3/5: Silver → Gold (aggregation)", expanded=True) as status:
             st.write("Aggregating into business-ready tables (BigQuery-style).")
             time.sleep(delay)
-            by_region, by_product, monthly, kpis = run_gold(silver_df)
+            try:
+                by_region, by_product, monthly, kpis, bq_ref = run_gold(silver_df, gcp_cfg if using_real else None)
+                if using_real and bq_ref:
+                    st.success(f"Real round trip confirmed: wrote to and read back from `{bq_ref}`")
+            except Exception as e:
+                st.error(f"Real GCP call failed ({e}). Continuing with local computation only.")
+                by_region, by_product, monthly, kpis, _ = run_gold(silver_df, None)
             st.write(f"Built **{len(by_region)}** region rollups and **{len(by_product)}** product rollups.")
             status.update(label="Stage 3/5: Gold zone — done", state="complete")
         progress.progress(60, text="Gold tables built")
@@ -354,7 +473,8 @@ if page == "Live pipeline demo":
         st.download_button("Download region rollup (CSV)", csv_buf.getvalue(), file_name="gold_region_rollup.csv", mime="text/csv")
 
         st.subheader("Data quality & lineage audit")
-        st.caption("Every stage logs its row counts and what it did, for governance and traceability.")
+        mode_label = "Real GCP infrastructure (Cloud Storage + BigQuery)" if using_real else "Simulated (in-memory, no GCP infrastructure provisioned)"
+        st.caption(f"Mode for this run: **{mode_label}**. Every stage logs its row counts and what it did.")
         st.dataframe(pd.DataFrame(st.session_state.get("lineage", [])), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
