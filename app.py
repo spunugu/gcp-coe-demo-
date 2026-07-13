@@ -200,7 +200,7 @@ if page == "Live pipeline demo":
     instant = st.checkbox("Instant mode (skip animation)", value=False)
 
     with st.expander("Preview raw data"):
-        st.dataframe(raw_df.head(20), use_container_width=True)
+        st.dataframe(raw_df.head(20), width='stretch')
 
     run = st.button("Run pipeline", type="primary")
 
@@ -318,10 +318,10 @@ if page == "Live pipeline demo":
         chart_col1, chart_col2 = st.columns(2)
         with chart_col1:
             fig1 = px.bar(by_region, x="region", y="total_revenue", title="Revenue by region")
-            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig1, width='stretch')
         with chart_col2:
             fig2 = px.pie(by_product, names="product", values="total_revenue", title="Revenue by product")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
         if len(forecast):
             trend_df = pd.concat([
@@ -331,27 +331,27 @@ if page == "Live pipeline demo":
             fig3 = px.line(trend_df, x="month", y="revenue", color="kind", markers=True, title="Monthly revenue: actual + forecast")
         else:
             fig3 = px.line(monthly, x="month", y="total_revenue", markers=True, title="Monthly revenue trend")
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width='stretch')
 
         st.subheader("ML platform outputs")
         m1, m2 = st.tabs(["Anomalies detected", "Revenue forecast"])
         with m1:
             if len(anomalies):
-                st.dataframe(anomalies, use_container_width=True, hide_index=True)
+                st.dataframe(anomalies, width='stretch', hide_index=True)
             else:
                 st.caption("No anomalies above the |z| > 3 threshold in this run.")
         with m2:
             if len(forecast):
-                st.dataframe(forecast, use_container_width=True, hide_index=True)
+                st.dataframe(forecast, width='stretch', hide_index=True)
             else:
                 st.caption("Not enough monthly history to forecast (need 3+ months).")
 
         st.subheader("Gold tables")
         t1, t2 = st.tabs(["By region", "By product"])
         with t1:
-            st.dataframe(by_region, use_container_width=True, hide_index=True)
+            st.dataframe(by_region, width='stretch', hide_index=True)
         with t2:
-            st.dataframe(by_product, use_container_width=True, hide_index=True)
+            st.dataframe(by_product, width='stretch', hide_index=True)
 
         csv_buf = io.StringIO()
         by_region.to_csv(csv_buf, index=False)
@@ -360,7 +360,7 @@ if page == "Live pipeline demo":
         st.subheader("Data quality & lineage audit")
         mode_label = "Real GCP infrastructure (Pub/Sub + Cloud Storage + BigQuery)" if using_real else "Simulated (in-memory, no GCP infrastructure provisioned)"
         st.caption(f"Mode for this run: **{mode_label}**. Every stage logs its row counts and what it did.")
-        st.dataframe(pd.DataFrame(lineage), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(lineage), width='stretch', hide_index=True)
 
 # ---------------------------------------------------------------------------
 # Architecture overview page
@@ -398,7 +398,7 @@ elif page == "Reusable asset catalog":
     )
 
     catalog = load_catalog()
-    st.dataframe(pd.DataFrame(catalog), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(catalog), width='stretch', hide_index=True)
 
     st.subheader("Add a new asset")
     with st.form("add_asset"):
