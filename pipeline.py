@@ -31,13 +31,14 @@ def generate_sample_data(n=800, seed=7):
     rng = np.random.default_rng(seed)
     order_ids = np.arange(1, n + 1)
     dates = pd.date_range("2026-01-01", "2026-06-30", periods=n)
+    date_choices = pd.to_datetime(rng.choice(dates.to_numpy(), size=n))
     df = pd.DataFrame({
         "order_id": order_ids,
-        "order_date": rng.choice(dates, size=n),
-        "region": rng.choice(REGIONS, size=n, p=[0.4, 0.3, 0.2, 0.1]),
-        "product": rng.choice(PRODUCTS, size=n),
-        "quantity": rng.integers(1, 20, size=n),
-        "unit_price": rng.choice([99.0, 149.0, 249.0, 499.0, 999.0], size=n),
+        "order_date": date_choices,
+        "region": rng.choice(REGIONS, size=n, p=[0.4, 0.3, 0.2, 0.1]).astype(str),
+        "product": rng.choice(PRODUCTS, size=n).astype(str),
+        "quantity": rng.integers(1, 20, size=n).astype("int64"),
+        "unit_price": rng.choice([99.0, 149.0, 249.0, 499.0, 999.0], size=n).astype("float64"),
         "customer_email": [f"customer{i}@example.com" for i in order_ids],
     })
     dupe_idx = rng.choice(df.index, size=int(n * 0.03), replace=False)
@@ -48,7 +49,17 @@ def generate_sample_data(n=800, seed=7):
     df.loc[bad_qty_idx, "quantity"] = -1
     spike_idx = rng.choice(df.index, size=6, replace=False)
     df.loc[spike_idx, "quantity"] = rng.integers(150, 300, size=6)
-    return df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    df = df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    # Explicit dtypes as a final pass - defends against Arrow-based table
+    # rendering crashing on ambiguous/object dtype columns.
+    df["order_date"] = pd.to_datetime(df["order_date"])
+    df["order_id"] = df["order_id"].astype("int64")
+    df["quantity"] = df["quantity"].astype("int64")
+    df["unit_price"] = df["unit_price"].astype("float64")
+    df["region"] = df["region"].astype(str)
+    df["product"] = df["product"].astype(str)
+    df["customer_email"] = df["customer_email"].astype(str)
+    return df
 
 
 def validate_schema(df):
