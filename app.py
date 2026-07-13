@@ -385,17 +385,6 @@ elif page == "Architecture overview":
             for svc in layer["services"]:
                 st.markdown(f"- {svc}")
 
-    st.subheader("July deliverables")
-    JULY_DELIVERABLES = pd.DataFrame([
-        {"Deliverable": "Finalize charter and governance", "Outcome": "Operating model established", "Status": "Done"},
-        {"Deliverable": "Publish initial technology archetypes", "Outcome": "Standard solution patterns", "Status": "Done"},
-        {"Deliverable": "Catalogue reusable IP", "Outcome": "Shared technology assets", "Status": "Done"},
-        {"Deliverable": "Launch certification roadmap", "Outcome": "Capability development begins", "Status": "Done"},
-        {"Deliverable": "Establish Architecture Review Board", "Outcome": "Technical governance in place", "Status": "Done"},
-        {"Deliverable": "Support strategic pursuits", "Outcome": "Immediate business impact", "Status": "In progress"},
-    ])
-    st.dataframe(JULY_DELIVERABLES, use_container_width=True, hide_index=True)
-
 # ---------------------------------------------------------------------------
 # Reusable asset catalog page (persisted to a local JSON file)
 # ---------------------------------------------------------------------------
