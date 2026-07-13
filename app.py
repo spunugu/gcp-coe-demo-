@@ -25,6 +25,7 @@ import plotly.express as px
 
 import pipeline
 import ai_helper
+import help_bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("gcp_coe_demo")
@@ -430,87 +431,124 @@ elif page == "Reusable asset catalog":
             st.rerun()
 
 # ---------------------------------------------------------------------------
-# AI Assistant page - bring-your-own-key chat with Claude, ChatGPT, or Gemini
+# AI Assistant page - free built-in help by default, optional bring-your-own-key
 # ---------------------------------------------------------------------------
 
 elif page == "AI Assistant":
     st.title("AI Assistant")
-    st.markdown(
-        "Bring your own API key to chat with Claude, ChatGPT, or Gemini about "
-        "this CoE, the architecture, or your last pipeline run. This maps to "
-        "the ML platform layer's future RAG/LLM extension in the roadmap."
-    )
-    st.caption(
-        "Your API key is used only for this session — it is never written to "
-        "disk, saved to the asset catalog, or logged. Requires "
-        "`pip install -r requirements-ai.txt` to be installed for the "
-        "provider you choose."
-    )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        provider = st.selectbox("Provider", list(ai_helper.DEFAULT_MODELS.keys()))
-    with col2:
-        model = st.text_input(
-            "Model name (editable — provider lineups change)",
-            value=ai_helper.DEFAULT_MODELS[provider],
-        )
-
-    api_key = st.text_input(f"{provider} API key", type="password", key=f"api_key_{provider}")
-
-    use_context = st.checkbox(
-        "Include my last pipeline run as context",
-        value=bool(st.session_state.get("last_pipeline_summary")),
-        disabled="last_pipeline_summary" not in st.session_state,
-        help="Run the pipeline on the 'Live pipeline demo' page first to enable this.",
+    mode = st.radio(
+        "Mode",
+        ["Free built-in help (no API key, no cost)", "Bring your own API key (Claude / ChatGPT / Gemini / Groq)"],
+        horizontal=False,
     )
 
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
 
-    for msg in st.session_state["chat_history"]:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    # -----------------------------------------------------------------
+    # Free mode: local keyword-matched FAQ, zero setup, zero cost
+    # -----------------------------------------------------------------
+    if mode == "Free built-in help (no API key, no cost)":
+        st.markdown(
+            "Answers common questions about this CoE, the architecture, and "
+            "the app using a built-in knowledge base — no API key, no "
+            "external call, no cost. Ask about: architecture layers, "
+            "pipeline stages, what's real vs simulated, deployment, real "
+            "GCP mode, the catalog, certifications, or errors like segfaults."
+        )
 
-    user_input = st.chat_input("Ask about the architecture, the CoE, or your pipeline results...")
+        for msg in st.session_state["chat_history"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-    if user_input:
-        if not api_key:
-            st.error(f"Enter your {provider} API key above first.")
-        else:
+        user_input = st.chat_input("Ask a question about the CoE or this app...")
+        if user_input:
             st.session_state["chat_history"].append({"role": "user", "content": user_input})
             with st.chat_message("user"):
                 st.markdown(user_input)
-
-            system_prompt = (
-                "You are a helpful assistant embedded in a GCP Data & AI Center "
-                "of Excellence demo app for Incedo. Answer questions about the "
-                "GCP reference architecture (data sources, ingestion, lakehouse "
-                "storage, processing, ML platform, analytics/BI, application "
-                "layer) and, when provided, the user's own pipeline run results. "
-                "Be concise and specific."
-            )
-            if use_context and st.session_state.get("last_pipeline_summary"):
-                system_prompt += "\n\nLatest pipeline run summary:\n" + st.session_state["last_pipeline_summary"]
-
+            reply = help_bot.answer(user_input) or help_bot.FALLBACK
             with st.chat_message("assistant"):
-                with st.spinner(f"Asking {provider}..."):
-                    try:
-                        reply = ai_helper.ask(
-                            provider, api_key, model,
-                            st.session_state["chat_history"],
-                            system=system_prompt,
-                        )
-                        st.markdown(reply)
-                        st.session_state["chat_history"].append({"role": "assistant", "content": reply})
-                    except ImportError:
-                        st.error(
-                            f"The {provider} SDK isn't installed. Run "
-                            f"`pip install -r requirements-ai.txt` and restart the app."
-                        )
-                    except Exception as e:
-                        logger.exception("AI assistant call failed")
-                        st.error(f"{provider} call failed: {e}")
+                st.markdown(reply)
+            st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+
+    # -----------------------------------------------------------------
+    # Bring-your-own-key mode: real LLM, open-ended questions
+    # -----------------------------------------------------------------
+    else:
+        st.markdown(
+            "For open-ended questions the built-in FAQ can't answer, or to "
+            "discuss your last pipeline run in detail, bring your own API key."
+        )
+        st.caption(
+            "Your API key is used only for this session — it is never written "
+            "to disk, saved to the asset catalog, or logged. Requires "
+            "`pip install -r requirements-ai.txt` for the provider you choose. "
+            "Gemini and Groq both have genuinely free tiers (no credit card) — "
+            "see the app's setup notes for how to get a key."
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            provider = st.selectbox("Provider", list(ai_helper.DEFAULT_MODELS.keys()))
+        with col2:
+            model = st.text_input(
+                "Model name (editable — provider lineups change)",
+                value=ai_helper.DEFAULT_MODELS[provider],
+            )
+
+        api_key = st.text_input(f"{provider} API key", type="password", key=f"api_key_{provider}")
+
+        use_context = st.checkbox(
+            "Include my last pipeline run as context",
+            value=bool(st.session_state.get("last_pipeline_summary")),
+            disabled="last_pipeline_summary" not in st.session_state,
+            help="Run the pipeline on the 'Live pipeline demo' page first to enable this.",
+        )
+
+        for msg in st.session_state["chat_history"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        user_input = st.chat_input("Ask about the architecture, the CoE, or your pipeline results...")
+
+        if user_input:
+            if not api_key:
+                st.error(f"Enter your {provider} API key above first.")
+            else:
+                st.session_state["chat_history"].append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+
+                system_prompt = (
+                    "You are a helpful assistant embedded in a GCP Data & AI Center "
+                    "of Excellence demo app for Incedo. Answer questions about the "
+                    "GCP reference architecture (data sources, ingestion, lakehouse "
+                    "storage, processing, ML platform, analytics/BI, application "
+                    "layer) and, when provided, the user's own pipeline run results. "
+                    "Be concise and specific."
+                )
+                if use_context and st.session_state.get("last_pipeline_summary"):
+                    system_prompt += "\n\nLatest pipeline run summary:\n" + st.session_state["last_pipeline_summary"]
+
+                with st.chat_message("assistant"):
+                    with st.spinner(f"Asking {provider}..."):
+                        try:
+                            reply = ai_helper.ask(
+                                provider, api_key, model,
+                                st.session_state["chat_history"],
+                                system=system_prompt,
+                            )
+                            st.markdown(reply)
+                            st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+                        except ImportError:
+                            st.error(
+                                f"The {provider} SDK isn't installed. Run "
+                                f"`pip install -r requirements-ai.txt` and restart the app."
+                            )
+                        except Exception as e:
+                            logger.exception("AI assistant call failed")
+                            st.error(f"{provider} call failed: {e}")
 
     if st.session_state["chat_history"] and st.button("Clear chat"):
         st.session_state["chat_history"] = []
