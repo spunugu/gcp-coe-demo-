@@ -224,12 +224,12 @@ def run_ml(silver_df, monthly_df):
 
     forecast = pd.DataFrame()
     if len(monthly_df) >= 3:
-        from sklearn.linear_model import LinearRegression
         m = monthly_df.copy().reset_index(drop=True)
         m["t"] = np.arange(len(m))
-        model = LinearRegression().fit(m[["t"]], m["total_revenue"])
+        # Simple linear fit via numpy (avoids a scikit-learn dependency)
+        slope, intercept = np.polyfit(m["t"], m["total_revenue"], deg=1)
         future_t = np.arange(len(m), len(m) + 2)
-        future_preds = model.predict(future_t.reshape(-1, 1))
+        future_preds = slope * future_t + intercept
         future_months = pd.period_range(
             pd.Period(m["month"].iloc[-1]) + 1, periods=2, freq="M"
         ).astype(str)
