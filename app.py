@@ -398,7 +398,8 @@ elif page == "Reusable asset catalog":
     )
 
     catalog = load_catalog()
-    st.dataframe(pd.DataFrame(catalog), width='stretch', hide_index=True)
+    catalog_df = pd.DataFrame(catalog).astype(str).reset_index(drop=True)
+    st.table(catalog_df)
 
     st.subheader("Add a new asset")
     with st.form("add_asset"):
