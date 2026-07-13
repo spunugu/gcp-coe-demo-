@@ -124,15 +124,111 @@ KNOWLEDGE_BASE = [
 ]
 
 
+SMALL_TALK = [
+    {
+        "triggers": ["hi", "hello", "hey", "hii", "hiya", "yo", "greetings", "good morning", "good afternoon", "good evening"],
+        "match": "exact_or_starts",
+        "answer": (
+            "Hi! I'm a built-in FAQ helper for this GCP Data & AI CoE app — "
+            "no API key, no cost, works instantly. Ask me about the "
+            "architecture layers, pipeline stages, what's real vs simulated, "
+            "deployment, the catalog, certifications, or errors like segfaults. "
+            "I'm not a full language model though — for open-ended "
+            "conversation, switch to 'Bring your own API key' above."
+        ),
+    },
+    {
+        "triggers": [
+            "what does this app do", "what does the app do", "explain this app",
+            "explain the app", "app overview", "walk me through", "walk through",
+            "how does this app work", "end to end", "full overview",
+            "overview of this app", "what is this app", "what does it do",
+            "tell me about this app", "describe this app",
+        ],
+        "match": "contains",
+        "answer": (
+            "Here's the full app, end to end — 4 pages:\n\n"
+            "**1. Live pipeline demo** — Pick a data source (generated sample "
+            "sales data, your own CSV upload, or a live BigQuery query). "
+            "Optionally turn on 'Real GCP infrastructure' to have it actually "
+            "hit Pub/Sub, Cloud Storage, and BigQuery instead of simulating. "
+            "Click 'Run pipeline' and watch it move through 5 stages: "
+            "Bronze (raw landing) → Silver (dedup, null-fill, drop invalid "
+            "rows, compute revenue) → Gold (aggregate by region/product/"
+            "month) → ML platform (anomaly detection + 2-month forecast) → "
+            "Analytics & BI (the dashboard: KPI cards, charts, downloadable "
+            "tables, and a full data-quality/lineage audit log).\n\n"
+            "**2. Architecture overview** — The 7-layer GCP reference "
+            "architecture this pipeline mirrors: data sources, ingestion, "
+            "lakehouse storage, processing, ML platform, analytics & BI, "
+            "and application layer — each mapped to specific GCP services.\n\n"
+            "**3. Reusable asset catalog** — A persisted list of this CoE's "
+            "reusable IP (this app, the Terraform module, the test suite, "
+            "etc.), with a form to add new entries.\n\n"
+            "**4. AI Assistant** — This chat. Free built-in FAQ mode (what "
+            "you're using now, no API key) or bring-your-own-key mode for "
+            "Claude, ChatGPT, Gemini, or Groq.\n\n"
+            "Under the hood: pipeline.py holds all the data/ML logic "
+            "(independently unit tested), app.py is the Streamlit UI, and "
+            "terraform/ can provision the real GCP resources. Runs locally, "
+            "on Streamlit Community Cloud, or on Cloud Run."
+        ),
+    },
+    {
+        "triggers": ["thanks", "thank you", "thx", "ty", "appreciate it"],
+        "match": "contains",
+        "answer": "You're welcome! Ask away if you have more questions about the CoE or this app.",
+    },
+    {
+        "triggers": ["what can you do", "who are you", "what are you", "help me", "capabilities", "what do you do"],
+        "match": "contains",
+        "answer": (
+            "I can answer questions about: the CoE's purpose, the 7 "
+            "architecture layers, the pipeline's bronze/silver/gold/ML "
+            "stages, what's genuinely real vs simulated in this demo, "
+            "deployment (Streamlit Cloud vs Cloud Run), enabling real GCP "
+            "mode, the reusable asset catalog, the certification roadmap, "
+            "and common errors like segfaults. I'm keyword-based, not a "
+            "full LLM — for anything else, switch to 'Bring your own API key'."
+        ),
+    },
+    {
+        "triggers": ["bye", "goodbye", "see ya", "see you", "later"],
+        "match": "exact_or_starts",
+        "answer": "Bye! Come back anytime you have questions about the CoE or this app.",
+    },
+]
+
+
+def _small_talk(question):
+    q_lower = question.strip().lower().rstrip("!.?")
+    q_tokens = _tokenize(question)
+    for entry in SMALL_TALK:
+        if entry["match"] == "exact_or_starts":
+            if any(q_lower == t or q_lower.startswith(t + " ") for t in entry["triggers"]):
+                return entry["answer"]
+        else:  # "contains" - whole-word match for single words, substring for phrases
+            for t in entry["triggers"]:
+                if " " in t:
+                    if t in q_lower:
+                        return entry["answer"]
+                elif t in q_tokens:
+                    return entry["answer"]
+    return None
+
+
 def _tokenize(text):
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
 def answer(question):
-    """Returns the best-matching canned answer, or None if nothing scores
-    above a minimal relevance threshold. Longer, more specific keywords are
-    weighted higher so a generic word like 'why' doesn't out-tie a specific
-    one like 'segfault'."""
+    """Checks small talk first (greetings, thanks, capabilities), then the
+    FAQ knowledge base with specificity-weighted keyword scoring. Returns
+    None if nothing matches either."""
+    small_talk_reply = _small_talk(question)
+    if small_talk_reply:
+        return small_talk_reply
+
     q_tokens = _tokenize(question)
     q_lower = question.lower()
     if not q_tokens:
