@@ -24,6 +24,7 @@ import streamlit as st
 import plotly.express as px
 
 import pipeline
+import ai_helper
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("gcp_coe_demo")
@@ -107,7 +108,7 @@ def save_catalog(catalog):
 st.sidebar.title("GCP Data & AI CoE")
 page = st.sidebar.radio(
     "Navigate",
-    ["Live pipeline demo", "Architecture overview", "Reusable asset catalog"],
+    ["Live pipeline demo", "Architecture overview", "Reusable asset catalog", "AI Assistant"],
 )
 st.sidebar.markdown("---")
 st.sidebar.caption("Incedo Data Technology CoE — GCP track")
@@ -362,6 +363,19 @@ if page == "Live pipeline demo":
         st.caption(f"Mode for this run: **{mode_label}**. Every stage logs its row counts and what it did.")
         st.dataframe(pd.DataFrame(lineage), width='stretch', hide_index=True)
 
+        # Save a compact summary for the AI Assistant page to use as context
+        st.session_state["last_pipeline_summary"] = (
+            f"Pipeline run mode: {mode_label}.\n"
+            f"KPIs: total revenue ${kpis['total_revenue']:,.0f}, "
+            f"{kpis['total_orders']} orders, avg order value ${kpis['avg_order_value']:,.0f}, "
+            f"top region {kpis['top_region']}.\n"
+            f"Revenue by region: {by_region.to_dict(orient='records')}\n"
+            f"Revenue by product: {by_product.to_dict(orient='records')}\n"
+            f"Anomalies detected: {len(anomalies)} orders flagged (|z-score| > 3).\n"
+            f"Forecast (next 2 months): {forecast.to_dict(orient='records') if len(forecast) else 'not enough history'}\n"
+            f"Data quality: {silver_stats}"
+        )
+
 # ---------------------------------------------------------------------------
 # Architecture overview page
 # ---------------------------------------------------------------------------
@@ -414,3 +428,90 @@ elif page == "Reusable asset catalog":
             logger.info("Catalog asset added: %s", name)
             st.success(f"Added '{name}' — saved to the catalog file.")
             st.rerun()
+
+# ---------------------------------------------------------------------------
+# AI Assistant page - bring-your-own-key chat with Claude, ChatGPT, or Gemini
+# ---------------------------------------------------------------------------
+
+elif page == "AI Assistant":
+    st.title("AI Assistant")
+    st.markdown(
+        "Bring your own API key to chat with Claude, ChatGPT, or Gemini about "
+        "this CoE, the architecture, or your last pipeline run. This maps to "
+        "the ML platform layer's future RAG/LLM extension in the roadmap."
+    )
+    st.caption(
+        "Your API key is used only for this session — it is never written to "
+        "disk, saved to the asset catalog, or logged. Requires "
+        "`pip install -r requirements-ai.txt` to be installed for the "
+        "provider you choose."
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        provider = st.selectbox("Provider", list(ai_helper.DEFAULT_MODELS.keys()))
+    with col2:
+        model = st.text_input(
+            "Model name (editable — provider lineups change)",
+            value=ai_helper.DEFAULT_MODELS[provider],
+        )
+
+    api_key = st.text_input(f"{provider} API key", type="password", key=f"api_key_{provider}")
+
+    use_context = st.checkbox(
+        "Include my last pipeline run as context",
+        value=bool(st.session_state.get("last_pipeline_summary")),
+        disabled="last_pipeline_summary" not in st.session_state,
+        help="Run the pipeline on the 'Live pipeline demo' page first to enable this.",
+    )
+
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_input = st.chat_input("Ask about the architecture, the CoE, or your pipeline results...")
+
+    if user_input:
+        if not api_key:
+            st.error(f"Enter your {provider} API key above first.")
+        else:
+            st.session_state["chat_history"].append({"role": "user", "content": user_input})
+            with st.chat_message("user"):
+                st.markdown(user_input)
+
+            system_prompt = (
+                "You are a helpful assistant embedded in a GCP Data & AI Center "
+                "of Excellence demo app for Incedo. Answer questions about the "
+                "GCP reference architecture (data sources, ingestion, lakehouse "
+                "storage, processing, ML platform, analytics/BI, application "
+                "layer) and, when provided, the user's own pipeline run results. "
+                "Be concise and specific."
+            )
+            if use_context and st.session_state.get("last_pipeline_summary"):
+                system_prompt += "\n\nLatest pipeline run summary:\n" + st.session_state["last_pipeline_summary"]
+
+            with st.chat_message("assistant"):
+                with st.spinner(f"Asking {provider}..."):
+                    try:
+                        reply = ai_helper.ask(
+                            provider, api_key, model,
+                            st.session_state["chat_history"],
+                            system=system_prompt,
+                        )
+                        st.markdown(reply)
+                        st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+                    except ImportError:
+                        st.error(
+                            f"The {provider} SDK isn't installed. Run "
+                            f"`pip install -r requirements-ai.txt` and restart the app."
+                        )
+                    except Exception as e:
+                        logger.exception("AI assistant call failed")
+                        st.error(f"{provider} call failed: {e}")
+
+    if st.session_state["chat_history"] and st.button("Clear chat"):
+        st.session_state["chat_history"] = []
+        st.rerun()
