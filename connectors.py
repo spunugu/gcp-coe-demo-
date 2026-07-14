@@ -26,15 +26,29 @@ CONNECTORS = {
     "csv_upload": {
         "label": "Upload CSV",
     },
-    "csv_path": {
-        "label": "CSV file path / GCS URI",
-        "help": "A file on the same server this app runs on, or gs://bucket/path.csv (GCS needs `pip install gcsfs`).",
-        "requires": "gcsfs (only for gs:// URIs)",
+    "file_path": {
+        "label": "File: CSV / JSON / Parquet / Excel (path or GCS URI)",
+        "help": "One connector for any of these formats - the extension picks the reader. A file on this server, or gs://bucket/path (GCS needs `pip install gcsfs`).",
+        "requires": "gcsfs (gs:// only), pyarrow (Parquet), openpyxl (Excel)",
         "fields": [
-            {"name": "path_or_uri", "label": "File path or GCS URI", "type": "text", "placeholder": "gs://my-bucket/data/orders.csv"},
+            {"name": "path_or_uri", "label": "File path or GCS URI", "type": "text", "placeholder": "gs://my-bucket/data/orders.parquet"},
         ],
-        "fetch": lambda p: pipeline.read_csv_path(p["path_or_uri"]),
+        "fetch": lambda p: pipeline.read_file_any(p["path_or_uri"]),
         "test": lambda p: pipeline.test_csv_path(p["path_or_uri"]),
+    },
+    "sftp": {
+        "label": "SFTP file drop",
+        "help": "Downloads one file from an SFTP server (the classic enterprise batch file-drop pattern) and reads it by extension.",
+        "requires": "paramiko",
+        "fields": [
+            {"name": "host", "label": "Host", "type": "text", "placeholder": "sftp.clientdomain.com"},
+            {"name": "port", "label": "Port", "type": "number", "default": 22},
+            {"name": "username", "label": "Username", "type": "text"},
+            {"name": "password", "label": "Password", "type": "password"},
+            {"name": "remote_path", "label": "Remote file path", "type": "text", "placeholder": "/outbound/orders.csv"},
+        ],
+        "fetch": lambda p: pipeline.read_from_sftp(p["host"], p["username"], p["password"], p["remote_path"], port=int(p["port"])),
+        "test": lambda p: pipeline.test_sftp(p["host"], p["username"], p["password"], port=int(p["port"])),
     },
     "kafka": {
         "label": "Kafka topic",
