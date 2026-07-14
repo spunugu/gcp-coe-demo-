@@ -8,6 +8,10 @@ mode (Pub/Sub, Cloud Storage, BigQuery) and a data quality / lineage audit
 trail at every stage. Pipeline logic lives in pipeline.py so it can be
 unit tested independently (see tests/test_pipeline.py).
 
+Each page is a function, and every page call is wrapped in a top-level
+try/except so an unexpected error on one page shows a friendly recoverable
+message instead of crashing the whole app or taking down other pages.
+
 Run locally:
     pip install -r requirements.txt
     streamlit run app.py
@@ -26,6 +30,8 @@ import plotly.express as px
 import pipeline
 import ai_helper
 import help_bot
+import animated_architecture
+import streamlit.components.v1 as components
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("gcp_coe_demo")
@@ -65,9 +71,6 @@ def check_access():
     return False
 
 
-if not check_access():
-    st.stop()
-
 # ---------------------------------------------------------------------------
 # Asset catalog persistence (local JSON file - survives page refresh and
 # other users hitting the same running instance; not durable across Cloud
@@ -103,22 +106,10 @@ def save_catalog(catalog):
 
 
 # ---------------------------------------------------------------------------
-# Sidebar navigation
-# ---------------------------------------------------------------------------
-
-st.sidebar.title("GCP Data & AI CoE")
-page = st.sidebar.radio(
-    "Navigate",
-    ["Live pipeline demo", "Architecture overview", "Reusable asset catalog", "AI Assistant"],
-)
-st.sidebar.markdown("---")
-st.sidebar.caption("Incedo Data Technology CoE — GCP track")
-
-# ---------------------------------------------------------------------------
 # Live pipeline demo page
 # ---------------------------------------------------------------------------
 
-if page == "Live pipeline demo":
+def render_live_pipeline_demo():
     st.title("Live pipeline demo")
     st.markdown(
         "Runs data through a real ingestion → bronze → silver → gold → ML → "
@@ -136,8 +127,12 @@ if page == "Live pipeline demo":
         if source_mode == "Upload CSV":
             uploaded = st.file_uploader("Upload CSV", type=["csv"])
             if uploaded is not None:
-                raw_df = pd.read_csv(uploaded)
-                st.caption(f"Loaded {len(raw_df)} rows from {uploaded.name}")
+                try:
+                    raw_df = pd.read_csv(uploaded)
+                    st.caption(f"Loaded {len(raw_df)} rows from {uploaded.name}")
+                except Exception as e:
+                    st.error(f"Could not read that CSV ({e}). Falling back to sample data.")
+                    raw_df = None
 
         elif source_mode == "Live BigQuery query (requires GCP credentials)":
             project_id = st.text_input("GCP project ID")
@@ -377,11 +372,12 @@ if page == "Live pipeline demo":
             f"Data quality: {silver_stats}"
         )
 
+
 # ---------------------------------------------------------------------------
 # Architecture overview page
 # ---------------------------------------------------------------------------
 
-elif page == "Architecture overview":
+def render_architecture_overview():
     st.title("GCP end-to-end architecture")
     st.markdown("The pipeline demo mirrors this reference architecture, stage for stage.")
 
@@ -400,11 +396,33 @@ elif page == "Architecture overview":
             for svc in layer["services"]:
                 st.markdown(f"- {svc}")
 
+
+# ---------------------------------------------------------------------------
+# Animated architecture page - MLOps platform flow with icons, mirrors the
+# target architecture reference image, mapped to GCP services
+# ---------------------------------------------------------------------------
+
+def render_animated_architecture():
+    st.title("Animated architecture: GCP MLOps platform")
+    st.markdown(
+        "Click **Run pipeline flow** to watch data and models move through "
+        "the 8-stage platform, from raw sources to consumers — the GCP "
+        "equivalent of a full production data and ML platform (data lake, "
+        "feature store, model registry, training, monitoring, serving)."
+    )
+    components.html(animated_architecture.HTML, height=1050, scrolling=True)
+    st.caption(
+        "This is a visual walkthrough of the target architecture. The "
+        "'Live pipeline demo' page runs the actual working slice of it "
+        "(ingestion through analytics) against real or sample data."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reusable asset catalog page (persisted to a local JSON file)
 # ---------------------------------------------------------------------------
 
-elif page == "Reusable asset catalog":
+def render_asset_catalog():
     st.title("Reusable asset catalog")
     st.caption(
         "Persisted to a local file on this server so it survives a page refresh. "
@@ -430,11 +448,12 @@ elif page == "Reusable asset catalog":
             st.success(f"Added '{name}' — saved to the catalog file.")
             st.rerun()
 
+
 # ---------------------------------------------------------------------------
 # AI Assistant page - free built-in help by default, optional bring-your-own-key
 # ---------------------------------------------------------------------------
 
-elif page == "AI Assistant":
+def render_ai_assistant():
     st.title("AI Assistant")
 
     mode = st.radio(
@@ -446,9 +465,6 @@ elif page == "AI Assistant":
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = []
 
-    # -----------------------------------------------------------------
-    # Free mode: local keyword-matched FAQ, zero setup, zero cost
-    # -----------------------------------------------------------------
     if mode == "Free built-in help (no API key, no cost)":
         st.markdown(
             "Answers common questions about this CoE, the architecture, and "
@@ -472,9 +488,6 @@ elif page == "AI Assistant":
                 st.markdown(reply)
             st.session_state["chat_history"].append({"role": "assistant", "content": reply})
 
-    # -----------------------------------------------------------------
-    # Bring-your-own-key mode: real LLM, open-ended questions
-    # -----------------------------------------------------------------
     else:
         st.markdown(
             "For open-ended questions the built-in FAQ can't answer, or to "
@@ -553,3 +566,46 @@ elif page == "AI Assistant":
     if st.session_state["chat_history"] and st.button("Clear chat"):
         st.session_state["chat_history"] = []
         st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Main entry point: access gate, sidebar navigation, and a top-level error
+# boundary around whichever page is selected. An unexpected exception on
+# one page shows a friendly recoverable message instead of Streamlit's raw
+# crash screen, and is logged for debugging rather than silently swallowed.
+# ---------------------------------------------------------------------------
+
+def main():
+    if not check_access():
+        st.stop()
+
+    st.sidebar.title("GCP Data & AI CoE")
+    page = st.sidebar.radio(
+        "Navigate",
+        ["Live pipeline demo", "Architecture overview", "Animated architecture", "Reusable asset catalog", "AI Assistant"],
+    )
+    st.sidebar.markdown("---")
+    st.sidebar.caption("Incedo Data Technology CoE — GCP track")
+
+    pages = {
+        "Live pipeline demo": render_live_pipeline_demo,
+        "Architecture overview": render_architecture_overview,
+        "Animated architecture": render_animated_architecture,
+        "Reusable asset catalog": render_asset_catalog,
+        "AI Assistant": render_ai_assistant,
+    }
+
+    try:
+        pages[page]()
+    except Exception as e:
+        logger.exception("Unhandled error rendering page: %s", page)
+        st.error(
+            "Something went wrong rendering this page. It's been logged. "
+            "Try refreshing, or switch to a different page from the sidebar."
+        )
+        with st.expander("Technical details (for debugging)"):
+            st.code(f"{type(e).__name__}: {e}")
+
+
+if __name__ == "__main__":
+    main()
