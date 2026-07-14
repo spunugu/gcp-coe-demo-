@@ -25,42 +25,42 @@ LAYERS = [
         ("i-db", "Operational DBs (CDC)"),
         ("i-stream", "Event streams"),
         ("i-db", "Files / partner feeds"),
-    ]),
+    ], "Capturing raw signals: database changes via CDC, real-time events, and batch file drops."),
     ("2. Ingestion", [
         ("i-stream", "Pub/Sub streaming"),
         ("i-stream", "Datastream CDC"),
         ("i-server", "Cloud Run API ingest"),
-    ]),
+    ], "Landing data reliably: Pub/Sub buffers streaming events, Datastream captures CDC, Cloud Run accepts API pushes."),
     ("3. Data lake: bronze / silver / gold", [
         ("i-layers", "Cloud Storage raw"),
         ("i-layers", "BigLake cleansed"),
         ("i-db", "BigQuery curated"),
-    ]),
+    ], "Medallion storage: raw data lands in bronze, gets cleaned into silver, curated into business-ready gold tables."),
     ("4. Processing", [
         ("i-gear", "Dataflow batch"),
         ("i-gear", "Dataflow streaming"),
         ("i-gear", "Dataproc Spark"),
-    ]),
+    ], "Transforming data: batch and streaming jobs join, aggregate, and validate records at scale."),
     ("5. Feature platform", [
         ("i-grid", "Feature engineering"),
         ("i-grid", "Feature Store offline"),
         ("i-grid", "Feature Store online"),
-    ]),
+    ], "Building ML-ready features: engineered offline for training, served online with low latency for inference."),
     ("6. ML platform", [
         ("i-ml", "Training + registry"),
         ("i-ml", "Batch prediction"),
         ("i-ml", "Model monitoring"),
-    ]),
+    ], "Training models, registering versions, running batch scoring, and watching for drift once deployed."),
     ("7. Serving layer", [
         ("i-db", "BigQuery warehouse"),
         ("i-server", "Vertex AI endpoint"),
         ("i-server", "Memorystore cache"),
-    ]),
+    ], "Serving results: warehouse queries, real-time inference endpoints, and a low-latency cache for hot lookups."),
     ("8. Consumers", [
         ("i-building", "Enterprise clients"),
         ("i-building", "Internal apps"),
         ("i-building", "Analysts / downstream"),
-    ]),
+    ], "Delivering value: dashboards, APIs, and downstream systems consume the finished data and predictions."),
 ]
 
 
@@ -72,9 +72,10 @@ def _build_layers_svg():
     box_w, box_h = 180, 40
     xs = [50, 250, 450]
 
-    for i, (title, services) in enumerate(LAYERS):
+    for i, (title, services, desc) in enumerate(LAYERS):
         parts.append(f'<g id="l{i}" class="layer">')
         parts.append(f'<rect class="container" x="40" y="{y}" width="600" height="{layer_h}" rx="10"/>')
+        parts.append(f'<circle class="activity-dot" cx="590" cy="{y+18}" r="5"/>')
         parts.append(f'<text class="th" x="56" y="{y+18}" font-size="14" font-weight="500">{title}</text>')
         for (icon, label), bx in zip(services, xs):
             by = y + 26
@@ -97,10 +98,18 @@ def _build_layers_svg():
 _LAYERS_SVG, _NEXT_Y = _build_layers_svg()
 _VIEWBOX_H = _NEXT_Y + 170
 
+_DESCRIPTIONS_JSON = "[" + ",".join(
+    '{"title": "%s", "desc": "%s"}' % (title.replace('"', "'"), desc.replace('"', "'"))
+    for title, _, desc in LAYERS
+) + "]"
+
 HTML = f"""
 <div style="display:flex;justify-content:center;margin-bottom:1rem;font-family:sans-serif">
 <button id="playBtn" onclick="playFlow()" style="padding:8px 16px;border-radius:8px;border:0.5px solid #888;background:transparent;cursor:pointer;font-size:14px">
 &#9654; Run pipeline flow</button>
+</div>
+<div id="statusPanel" style="font-family:sans-serif;min-height:44px;margin-bottom:12px;padding:10px 14px;border-radius:8px;border:0.5px solid #D3D1C7;background:#F1EFE8;font-size:13px;color:#444441">
+Click "Run pipeline flow" to see a live, stage-by-stage walkthrough here.
 </div>
 <svg width="100%" viewBox="0 0 680 {_VIEWBOX_H}" role="img" style="font-family:sans-serif">
 <title>Animated GCP MLOps platform architecture</title>
@@ -110,6 +119,7 @@ HTML = f"""
 {ICON_DEFS}
 </defs>
 <style>
+@keyframes pulse-dot {{ 0%,100% {{ opacity: 1; r: 5; }} 50% {{ opacity: 0.35; r: 6.5; }} }}
 .layer rect.container{{fill:#E6F1FB;stroke:#B4B2A9;stroke-width:0.5;transition:stroke .3s,stroke-width .3s}}
 .layer.active rect.container{{stroke:#185FA5;stroke-width:2.5}}
 .layer.done rect.container{{stroke:#3B6D11;stroke-width:1.5}}
@@ -117,6 +127,9 @@ HTML = f"""
 .layer.active .svcbox{{fill:#EAF3DE}}
 .pulse{{fill:#185FA5;opacity:0;transition:transform .5s linear,opacity .2s}}
 .icon{{color:#5F5E5A;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}}
+.activity-dot{{fill:#B4B2A9;opacity:0.3}}
+.layer.active .activity-dot{{fill:#185FA5;animation:pulse-dot 1s ease-in-out infinite}}
+.layer.done .activity-dot{{fill:#3B6D11;opacity:1}}
 text.th{{fill:#0C447C}}
 text.t{{fill:#2C2C2A}}
 </style>
@@ -129,11 +142,17 @@ text.t{{fill:#2C2C2A}}
 <text class="t" x="56" y="{_NEXT_Y+96}" font-size="11">Governance and security: Dataplex, Cloud DLP, IAM, KMS, Audit Logs</text>
 <text class="t" x="56" y="{_NEXT_Y+118}" font-size="11">CI/CD: Cloud Build, Artifact Registry, Terraform, Cloud Run/GKE rollout</text>
 </svg>
+<div id="logPanel" style="font-family:sans-serif;margin-top:12px;max-height:220px;overflow-y:auto;border:0.5px solid #D3D1C7;border-radius:8px;padding:10px 14px;font-size:12px;color:#444441;display:none"></div>
 <script>
+const STAGES = {_DESCRIPTIONS_JSON};
 function sleep(ms){{return new Promise(r=>setTimeout(r,ms));}}
 async function playFlow(){{
   const btn=document.getElementById('playBtn');
+  const statusPanel=document.getElementById('statusPanel');
+  const logPanel=document.getElementById('logPanel');
   btn.disabled=true;
+  logPanel.style.display='block';
+  logPanel.innerHTML='';
   const n={len(LAYERS)};
   const layers=[...Array(n).keys()].map(i=>document.getElementById('l'+i));
   const pulses=[...Array(n-1).keys()].map(i=>document.getElementById('p'+i));
@@ -141,17 +160,25 @@ async function playFlow(){{
   pulses.forEach(p=>{{p.style.opacity=0;p.style.transform='translateY(0px)';}});
   for(let i=0;i<layers.length;i++){{
     layers[i].classList.add('active');
-    await sleep(420);
+    const stage=STAGES[i];
+    statusPanel.innerHTML='<strong>Stage '+(i+1)+' of '+n+': '+stage.title+'</strong><br>'+stage.desc;
+    await sleep(900);
     if(i<pulses.length){{
       pulses[i].style.opacity=1;
       pulses[i].style.transform='translateY(26px)';
-      await sleep(420);
+      await sleep(500);
       pulses[i].style.opacity=0;
       pulses[i].style.transform='translateY(0px)';
     }}
     layers[i].classList.remove('active');
     layers[i].classList.add('done');
+    const entry=document.createElement('div');
+    entry.style.marginBottom='4px';
+    entry.innerHTML='&#10003; <strong>'+stage.title+'</strong> — '+stage.desc;
+    logPanel.appendChild(entry);
+    logPanel.scrollTop=logPanel.scrollHeight;
   }}
+  statusPanel.innerHTML='<strong>Pipeline flow complete.</strong> Scroll the log below to review every stage.';
   btn.disabled=false;
 }}
 </script>
