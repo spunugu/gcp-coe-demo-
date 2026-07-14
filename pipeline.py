@@ -181,6 +181,76 @@ def read_from_google_sheets(sheet_url_or_id, worksheet_name="Sheet1", service_ac
     return pd.DataFrame(worksheet.get_all_records())
 
 
+# ---------------------------------------------------------------------------
+# Connectivity tests - "can I reach this" checks, cheap and fast, separate
+# from actually fetching data. Each returns (True, message) on success and
+# raises on failure, so the caller's try/except handles both missing
+# packages (ImportError) and real connection failures the same way as the
+# fetch functions.
+# ---------------------------------------------------------------------------
+
+def test_bigquery(project_id):
+    from google.cloud import bigquery
+    client = bigquery.Client(project=project_id)
+    list(client.query("SELECT 1").result())
+    return True, f"Connected to BigQuery project '{project_id}'."
+
+
+def test_sql(connection_string):
+    import sqlalchemy
+    engine = sqlalchemy.create_engine(connection_string)
+    with engine.connect() as conn:
+        conn.execute(sqlalchemy.text("SELECT 1"))
+    dialect = connection_string.split("://")[0] if "://" in connection_string else "database"
+    return True, f"Connected via {dialect}."
+
+
+def test_kafka_broker(bootstrap_servers, timeout=5):
+    """Checks TCP reachability of the first broker in the list - fast,
+    doesn't require the topic to have messages (unlike a real consume)."""
+    import socket
+    first = bootstrap_servers.split(",")[0].strip()
+    host, port = first.split(":")
+    with socket.create_connection((host, int(port)), timeout=timeout):
+        pass
+    return True, f"Reached broker {first}."
+
+
+def test_rest_api(url, headers_json=""):
+    import json as json_lib
+    import requests
+    headers = json_lib.loads(headers_json) if headers_json else {}
+    response = requests.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    return True, f"Got HTTP {response.status_code} from {url}."
+
+
+def test_google_sheets(sheet_url_or_id, service_account_json=""):
+    import json as json_lib
+    import gspread
+    if service_account_json:
+        gc = gspread.service_account_from_dict(json_lib.loads(service_account_json))
+    else:
+        gc = gspread.service_account()
+    sheet = gc.open_by_url(sheet_url_or_id) if sheet_url_or_id.startswith("http") else gc.open_by_key(sheet_url_or_id)
+    return True, f"Opened sheet '{sheet.title}'."
+
+
+def test_csv_path(path_or_uri):
+    import os
+    if path_or_uri.startswith("gs://"):
+        from google.cloud import storage
+        bucket_name, blob_path = path_or_uri[5:].split("/", 1)
+        client = storage.Client()
+        blob = client.bucket(bucket_name).blob(blob_path)
+        if not blob.exists():
+            raise FileNotFoundError(f"{path_or_uri} does not exist or isn't accessible.")
+        return True, f"Found {path_or_uri} in Cloud Storage."
+    if not os.path.exists(path_or_uri):
+        raise FileNotFoundError(f"{path_or_uri} does not exist on this server.")
+    return True, f"Found {path_or_uri} on disk."
+
+
 def real_publish_to_pubsub(project_id, topic_id, df, sample_n=20):
     from google.cloud import pubsub_v1
     publisher = pubsub_v1.PublisherClient()
