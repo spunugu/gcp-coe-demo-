@@ -427,6 +427,20 @@ def render_live_pipeline_demo():
             f"Data quality: {silver_stats}"
         )
 
+        # Structured stats for the animated architecture page - lets that
+        # diagram show real numbers from this run instead of generic text.
+        st.session_state["last_pipeline_stats"] = {
+            "bronze_rows": f"This run: {silver_stats['rows_after_cleaning'] + silver_stats['duplicates_removed'] + silver_stats['invalid_rows_dropped']} rows landed.",
+            "silver_stats": (
+                f"This run: removed {silver_stats['duplicates_removed']} duplicates, "
+                f"filled {silver_stats['nulls_filled']} nulls, dropped {silver_stats['invalid_rows_dropped']} invalid rows."
+            ),
+            "gold_rows": f"This run: {len(by_region)} region and {len(by_product)} product rollups produced.",
+            "anomalies": f"This run: flagged {len(anomalies)} orders as revenue outliers.",
+            "forecast": f"This run: forecasted {len(forecast)} future months." if len(forecast) else "This run: not enough history to forecast.",
+            "kpi_summary": f"This run: ${kpis['total_revenue']:,.0f} total revenue across {kpis['total_orders']} orders.",
+        }
+
 
 # ---------------------------------------------------------------------------
 # Architecture overview page
@@ -461,15 +475,31 @@ def render_animated_architecture():
     st.title("Animated architecture: GCP MLOps platform")
     st.markdown(
         "Click **Run pipeline flow** to watch data and models move through "
-        "the 8-stage platform, from raw sources to consumers — the GCP "
-        "equivalent of a full production data and ML platform (data lake, "
-        "feature store, model registry, training, monitoring, serving)."
+        "the 8-stage platform, one service at a time — the GCP equivalent "
+        "of a full production data and ML platform (data lake, feature "
+        "store, model registry, training, monitoring, serving)."
     )
-    components.html(animated_architecture.HTML, height=1050, scrolling=True)
+
+    has_real_stats = bool(st.session_state.get("last_pipeline_stats"))
+    use_real = st.checkbox(
+        "Show numbers from my last real pipeline run",
+        value=has_real_stats,
+        disabled=not has_real_stats,
+        help="Run the pipeline on 'Live pipeline demo' first to enable this — the walkthrough below will then show actual row counts and KPIs instead of generic descriptions.",
+    )
+    if not has_real_stats:
+        st.caption("No pipeline run yet this session — showing generic descriptions. Run the pipeline demo first to see real numbers here.")
+    elif use_real:
+        st.caption("Showing real numbers from your last pipeline run.")
+
+    stats = st.session_state.get("last_pipeline_stats") if (has_real_stats and use_real) else None
+    html = animated_architecture.build_html(stats=stats)
+    components.html(html, height=1200, scrolling=True)
+
     st.caption(
-        "This is a visual walkthrough of the target architecture. The "
-        "'Live pipeline demo' page runs the actual working slice of it "
-        "(ingestion through analytics) against real or sample data."
+        "Each service activates individually with its own action line, and the log below "
+        "records everything once the run finishes. The 'Live pipeline demo' page runs the "
+        "actual working slice of this (ingestion through analytics) against real or sample data."
     )
 
 
