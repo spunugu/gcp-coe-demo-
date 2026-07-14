@@ -79,6 +79,108 @@ def fetch_bigquery_data(project_id, query):
     return client.query(query).to_dataframe()
 
 
+def read_csv_path(path_or_uri):
+    """Reads a CSV from a local file path or a gs:// URI. GCS URIs need
+    the optional 'gcsfs' package installed (pip install gcsfs) - pandas
+    uses it automatically via the gs:// scheme."""
+    return pd.read_csv(path_or_uri)
+
+
+def read_from_kafka(bootstrap_servers, topic, group_id="gcp-coe-demo", max_messages=50, timeout_ms=5000,
+                     security_protocol="PLAINTEXT", sasl_username=None, sasl_password=None):
+    """Consumes up to max_messages JSON messages from a Kafka topic and
+    returns them as a DataFrame. Uses kafka-python (pure Python, no C
+    extension) rather than confluent-kafka to avoid the same class of
+    native-library instability that caused issues with grpc on Streamlit
+    Cloud. For Confluent Cloud or any SASL-secured broker, pass
+    security_protocol='SASL_SSL' plus sasl_username/sasl_password (API
+    key/secret)."""
+    import json
+    from kafka import KafkaConsumer
+
+    consumer_kwargs = {
+        "bootstrap_servers": bootstrap_servers,
+        "group_id": group_id,
+        "auto_offset_reset": "earliest",
+        "enable_auto_commit": False,
+        "consumer_timeout_ms": timeout_ms,
+        "value_deserializer": lambda v: json.loads(v.decode("utf-8")),
+        "security_protocol": security_protocol,
+    }
+    if security_protocol.startswith("SASL"):
+        consumer_kwargs.update({
+            "sasl_mechanism": "PLAIN",
+            "sasl_plain_username": sasl_username,
+            "sasl_plain_password": sasl_password,
+        })
+
+    consumer = KafkaConsumer(topic, **consumer_kwargs)
+    rows = []
+    try:
+        for message in consumer:
+            rows.append(message.value)
+            if len(rows) >= max_messages:
+                break
+    finally:
+        consumer.close()
+
+    if not rows:
+        raise ValueError(
+            f"No messages read from topic '{topic}' within {timeout_ms}ms. "
+            "Check the topic has messages and the broker is reachable from "
+            "wherever this app is running."
+        )
+    return pd.DataFrame(rows)
+
+
+def read_from_sql(connection_string, query):
+    """Reads from any SQL database SQLAlchemy supports via a dialect-prefixed
+    connection string - the same function covers PostgreSQL, MySQL, Cloud
+    SQL, AlloyDB, SQL Server, and more. Examples:
+      postgresql+psycopg2://user:password@host:5432/dbname
+      mysql+pymysql://user:password@host:3306/dbname
+    For Cloud SQL without a public IP, run the Cloud SQL Auth Proxy locally
+    and point the connection string at 127.0.0.1 with the proxy's port."""
+    import sqlalchemy
+    engine = sqlalchemy.create_engine(connection_string)
+    with engine.connect() as conn:
+        return pd.read_sql(query, conn)
+
+
+def read_from_rest_api(url, method="GET", headers_json="", body_json="", json_path=""):
+    """Calls any JSON REST API and returns the result as a DataFrame.
+    headers_json/body_json are raw JSON strings (e.g. for an Authorization
+    bearer token). json_path drills into a nested response, dot-separated
+    (e.g. 'data.records') if the array of rows isn't at the top level."""
+    import json as json_lib
+    import requests
+    headers = json_lib.loads(headers_json) if headers_json else {}
+    body = json_lib.loads(body_json) if body_json else None
+    response = requests.request(method, url, headers=headers, json=body, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    if json_path:
+        for key in json_path.split("."):
+            data = data[key]
+    return pd.json_normalize(data)
+
+
+def read_from_google_sheets(sheet_url_or_id, worksheet_name="Sheet1", service_account_json=""):
+    """Reads a worksheet from Google Sheets. Pass a service account's JSON
+    key as a string (paste the file contents), or leave blank to use
+    gspread's default credential discovery (e.g. GOOGLE_APPLICATION_CREDENTIALS)."""
+    import json as json_lib
+    import gspread
+    if service_account_json:
+        creds_dict = json_lib.loads(service_account_json)
+        gc = gspread.service_account_from_dict(creds_dict)
+    else:
+        gc = gspread.service_account()
+    sheet = gc.open_by_url(sheet_url_or_id) if sheet_url_or_id.startswith("http") else gc.open_by_key(sheet_url_or_id)
+    worksheet = sheet.worksheet(worksheet_name)
+    return pd.DataFrame(worksheet.get_all_records())
+
+
 def real_publish_to_pubsub(project_id, topic_id, df, sample_n=20):
     from google.cloud import pubsub_v1
     publisher = pubsub_v1.PublisherClient()
