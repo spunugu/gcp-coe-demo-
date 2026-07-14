@@ -86,6 +86,63 @@ def read_csv_path(path_or_uri):
     return pd.read_csv(path_or_uri)
 
 
+def read_file_any(path_or_uri):
+    """Reads CSV, JSON, Parquet, or Excel based on the file extension -
+    one connector for 'whatever format the file is', local path or gs://
+    URI. Parquet/Excel need extra packages (pyarrow / openpyxl)."""
+    ext = path_or_uri.rsplit(".", 1)[-1].lower()
+    if ext == "csv":
+        return pd.read_csv(path_or_uri)
+    if ext == "json":
+        return pd.read_json(path_or_uri)
+    if ext == "parquet":
+        return pd.read_parquet(path_or_uri)
+    if ext in ("xlsx", "xls"):
+        return pd.read_excel(path_or_uri)
+    raise ValueError(f"Unrecognized file extension '.{ext}' - expected csv, json, parquet, xlsx, or xls.")
+
+
+def read_from_sftp(host, username, password, remote_path, port=22):
+    """Downloads a file from an SFTP server and reads it with read_file_any
+    based on its extension. Uses paramiko (pip install paramiko)."""
+    import io as _io
+    import paramiko
+    transport = paramiko.Transport((host, port))
+    try:
+        transport.connect(username=username, password=password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        buf = _io.BytesIO()
+        sftp.getfo(remote_path, buf)
+        sftp.close()
+    finally:
+        transport.close()
+    buf.seek(0)
+    ext = remote_path.rsplit(".", 1)[-1].lower()
+    if ext == "csv":
+        return pd.read_csv(buf)
+    if ext == "json":
+        return pd.read_json(buf)
+    if ext == "parquet":
+        return pd.read_parquet(buf)
+    if ext in ("xlsx", "xls"):
+        return pd.read_excel(buf)
+    raise ValueError(f"Unrecognized file extension '.{ext}' on {remote_path}.")
+
+
+def get_secret(secret_resource_name):
+    """Fetches a secret's value from Google Cloud Secret Manager, given its
+    full resource name: projects/PROJECT_ID/secrets/SECRET_NAME/versions/latest
+    (or a specific version number instead of 'latest'). Requires
+    `pip install google-cloud-secret-manager` and a service account / ADC
+    with the Secret Manager Secret Accessor role. This is the enterprise
+    pattern for connector credentials: store them once in Secret Manager
+    instead of retyping into the app each session."""
+    from google.cloud import secretmanager
+    client = secretmanager.SecretManagerServiceClient()
+    response = client.access_secret_version(request={"name": secret_resource_name})
+    return response.payload.data.decode("utf-8")
+
+
 def read_from_kafka(bootstrap_servers, topic, group_id="gcp-coe-demo", max_messages=50, timeout_ms=5000,
                      security_protocol="PLAINTEXT", sasl_username=None, sasl_password=None):
     """Consumes up to max_messages JSON messages from a Kafka topic and
@@ -249,6 +306,16 @@ def test_csv_path(path_or_uri):
     if not os.path.exists(path_or_uri):
         raise FileNotFoundError(f"{path_or_uri} does not exist on this server.")
     return True, f"Found {path_or_uri} on disk."
+
+
+def test_sftp(host, username, password, port=22):
+    import paramiko
+    transport = paramiko.Transport((host, port))
+    try:
+        transport.connect(username=username, password=password)
+    finally:
+        transport.close()
+    return True, f"Authenticated to {host}:{port} via SFTP."
 
 
 def real_publish_to_pubsub(project_id, topic_id, df, sample_n=20):
