@@ -1,0 +1,26 @@
+# Optional extras for the connector registry (connectors.py). Install only
+# what a given client's sources actually need - none of these are required
+# for the base app (sample data, CSV upload, and the core pipeline all work
+# without any of this).
+#
+#   pip install -r requirements-connectors.txt   # everything
+#   pip install kafka-python                     # just Kafka
+#   pip install sqlalchemy psycopg2-binary       # just Postgres/Cloud SQL
+#   pip install sqlalchemy pymysql               # just MySQL
+#   pip install requests                         # just REST API
+#   pip install gspread google-auth              # just Google Sheets
+#   pip install gcsfs                             # just gs:// CSV paths
+#
+# None of these pull in grpc or other native-extension-heavy packages that
+# caused the Streamlit Cloud segfault we hit with the GCP client libraries -
+# they're either pure Python or use widely-deployed, stable C extensions
+# (psycopg2-binary ships a precompiled wheel for virtually every platform).
+
+kafka-python>=2.0
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+pymysql>=1.1
+requests>=2.31
+gspread>=6.0
+google-auth>=2.30
+gcsfs>=2024.6
