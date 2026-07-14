@@ -171,7 +171,20 @@ def render_live_pipeline_demo():
                             f["label"], value=f.get("default", ""), placeholder=f.get("placeholder", ""), key=key
                         )
 
-            if st.button(f"Connect and fetch — {spec['label']}"):
+            btn_col1, btn_col2 = st.columns([1, 1.4])
+            with btn_col1:
+                if spec.get("test") and st.button("Test connection", key=f"test_{selected_key}"):
+                    try:
+                        ok, msg = spec["test"](params)
+                        st.success(f"Connected. {msg}")
+                    except ImportError as e:
+                        st.error(f"Missing package ({e}). Run `pip install {spec.get('requires', 'the required package')}`.")
+                    except Exception as e:
+                        st.error(f"Not reachable: {e}")
+            with btn_col2:
+                fetch_clicked = st.button(f"Connect and fetch — {spec['label']}", key=f"fetch_{selected_key}")
+
+            if fetch_clicked:
                 try:
                     raw_df = spec["fetch"](params)
                     st.success(f"Fetched {len(raw_df)} rows via {spec['label']}.")
