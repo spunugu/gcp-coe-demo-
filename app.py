@@ -31,6 +31,7 @@ import pipeline
 import ai_helper
 import help_bot
 import animated_architecture
+import connectors
 import streamlit.components.v1 as components
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -117,14 +118,19 @@ def render_live_pipeline_demo():
     )
 
     with st.expander("Data source", expanded=True):
-        source_mode = st.radio(
-            "Choose data source",
-            ["Sample data (instant, no setup)", "Upload CSV", "Live BigQuery query (requires GCP credentials)"],
-            horizontal=True,
-        )
+        connector_keys = list(connectors.CONNECTORS.keys())
+        labels = [connectors.CONNECTORS[k]["label"] for k in connector_keys]
+        selected_label = st.selectbox("Choose data source", labels)
+        selected_key = connector_keys[labels.index(selected_label)]
+        spec = connectors.CONNECTORS[selected_key]
 
         raw_df = None
-        if source_mode == "Upload CSV":
+
+        if selected_key == "sample":
+            raw_df = pipeline.generate_sample_data()
+            st.caption(f"Using generated sample sales data ({len(raw_df)} rows, includes duplicates/nulls/outliers on purpose)")
+
+        elif selected_key == "csv_upload":
             uploaded = st.file_uploader("Upload CSV", type=["csv"])
             if uploaded is not None:
                 try:
@@ -134,35 +140,50 @@ def render_live_pipeline_demo():
                     st.error(f"Could not read that CSV ({e}). Falling back to sample data.")
                     raw_df = None
 
-        elif source_mode == "Live BigQuery query (requires GCP credentials)":
-            project_id = st.text_input("GCP project ID")
-            query = st.text_area(
-                "SQL query",
-                value=(
-                    "SELECT station_id, COUNT(*) AS trip_count\n"
-                    "FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips`\n"
-                    "WHERE start_time BETWEEN '2019-01-01' AND '2019-01-31'\n"
-                    "GROUP BY station_id"
-                ),
-                height=120,
-            )
-            st.caption(
-                "Note: this sample query's schema differs from the sales pipeline below. "
-                "Point it at a table with order_id/region/product/quantity/unit_price/order_date "
-                "columns for the full pipeline to run against it."
-            )
-            if st.button("Fetch from BigQuery"):
+        else:
+            # Generic path: any connector registered in connectors.py renders
+            # itself from its field spec - adding a new source means adding
+            # an entry there, not new code here.
+            if spec.get("help"):
+                st.caption(spec["help"])
+            if spec.get("requires"):
+                st.caption(f"Requires: `pip install {spec['requires']}`")
+
+            params = {}
+            fields = spec.get("fields", [])
+            cols = st.columns(2) if len(fields) > 1 else [st.container()]
+            for i, f in enumerate(fields):
+                target = cols[i % len(cols)]
+                key = f"conn_{selected_key}_{f['name']}"
+                with target:
+                    if f["type"] == "password":
+                        params[f["name"]] = st.text_input(f["label"], type="password", key=key)
+                    elif f["type"] == "number":
+                        params[f["name"]] = st.number_input(f["label"], value=f.get("default", 0), key=key)
+                    elif f["type"] == "textarea":
+                        params[f["name"]] = st.text_area(f["label"], value=f.get("default", ""), key=key)
+                    elif f["type"] == "select":
+                        options = f["options"]
+                        default_idx = options.index(f["default"]) if f.get("default") in options else 0
+                        params[f["name"]] = st.selectbox(f["label"], options, index=default_idx, key=key)
+                    else:
+                        params[f["name"]] = st.text_input(
+                            f["label"], value=f.get("default", ""), placeholder=f.get("placeholder", ""), key=key
+                        )
+
+            if st.button(f"Connect and fetch — {spec['label']}"):
                 try:
-                    raw_df = pipeline.fetch_bigquery_data(project_id, query)
-                    st.success(f"Fetched {len(raw_df)} rows from BigQuery.")
+                    raw_df = spec["fetch"](params)
+                    st.success(f"Fetched {len(raw_df)} rows via {spec['label']}.")
+                except ImportError as e:
+                    st.error(f"Missing package ({e}). Run `pip install {spec.get('requires', 'the required package')}` and restart the app.")
+                    raw_df = pipeline.generate_sample_data()
                 except Exception as e:
-                    st.error(f"Could not reach BigQuery ({e}). Falling back to sample data.")
+                    st.error(f"Connection failed ({e}). Falling back to sample data.")
                     raw_df = pipeline.generate_sample_data()
 
         if raw_df is None:
             raw_df = pipeline.generate_sample_data()
-            if source_mode == "Sample data (instant, no setup)":
-                st.caption(f"Using generated sample sales data ({len(raw_df)} rows, includes duplicates/nulls/outliers on purpose)")
 
     with st.expander("Real GCP infrastructure (optional)"):
         st.caption(
