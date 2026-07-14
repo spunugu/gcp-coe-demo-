@@ -125,7 +125,7 @@ Click "Run pipeline flow" to see a live, stage-by-stage walkthrough here.
 .layer.done rect.container{{stroke:#3B6D11;stroke-width:1.5}}
 .svcbox{{fill:#FFFFFF;stroke:#D3D1C7;stroke-width:0.5;transition:fill .3s}}
 .layer.active .svcbox{{fill:#EAF3DE}}
-.pulse{{fill:#185FA5;opacity:0;transition:transform .5s linear,opacity .2s}}
+.pulse{{fill:#185FA5;opacity:0;transition:transform .7s linear,opacity .2s}}
 .icon{{color:#5F5E5A;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}}
 .activity-dot{{fill:#B4B2A9;opacity:0.3}}
 .layer.active .activity-dot{{fill:#185FA5;animation:pulse-dot 1s ease-in-out infinite}}
@@ -162,11 +162,11 @@ async function playFlow(){{
     layers[i].classList.add('active');
     const stage=STAGES[i];
     statusPanel.innerHTML='<strong>Stage '+(i+1)+' of '+n+': '+stage.title+'</strong><br>'+stage.desc;
-    await sleep(900);
+    await sleep(1700);
     if(i<pulses.length){{
       pulses[i].style.opacity=1;
       pulses[i].style.transform='translateY(26px)';
-      await sleep(500);
+      await sleep(800);
       pulses[i].style.opacity=0;
       pulses[i].style.transform='translateY(0px)';
     }}
