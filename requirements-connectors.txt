@@ -9,12 +9,19 @@
 #   pip install sqlalchemy pymysql               # just MySQL
 #   pip install requests                         # just REST API
 #   pip install gspread google-auth              # just Google Sheets
-#   pip install gcsfs                             # just gs:// CSV paths
+#   pip install gcsfs                             # just gs:// file paths
+#   pip install pyarrow                           # just Parquet files
+#   pip install openpyxl                          # just Excel files
+#   pip install paramiko                          # just SFTP
+#   pip install google-cloud-secret-manager       # Secret Manager credentials
 #
 # None of these pull in grpc or other native-extension-heavy packages that
 # caused the Streamlit Cloud segfault we hit with the GCP client libraries -
 # they're either pure Python or use widely-deployed, stable C extensions
 # (psycopg2-binary ships a precompiled wheel for virtually every platform).
+# google-cloud-secret-manager does depend on grpc like the other GCP client
+# libraries - if adding it to requirements.txt on Streamlit Cloud causes
+# problems, that's the same known issue; Cloud Run is unaffected.
 
 kafka-python>=2.0
 sqlalchemy>=2.0
@@ -24,3 +31,7 @@ requests>=2.31
 gspread>=6.0
 google-auth>=2.30
 gcsfs>=2024.6
+pyarrow>=16.0
+openpyxl>=3.1
+paramiko>=3.4
+google-cloud-secret-manager>=2.20
