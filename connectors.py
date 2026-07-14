@@ -34,6 +34,7 @@ CONNECTORS = {
             {"name": "path_or_uri", "label": "File path or GCS URI", "type": "text", "placeholder": "gs://my-bucket/data/orders.csv"},
         ],
         "fetch": lambda p: pipeline.read_csv_path(p["path_or_uri"]),
+        "test": lambda p: pipeline.test_csv_path(p["path_or_uri"]),
     },
     "kafka": {
         "label": "Kafka topic",
@@ -56,6 +57,7 @@ CONNECTORS = {
             security_protocol=p["security_protocol"],
             sasl_username=p.get("sasl_username") or None, sasl_password=p.get("sasl_password") or None,
         ),
+        "test": lambda p: pipeline.test_kafka_broker(p["bootstrap_servers"]),
     },
     "bigquery": {
         "label": "BigQuery (live query)",
@@ -66,6 +68,7 @@ CONNECTORS = {
             {"name": "query", "label": "SQL query", "type": "textarea", "default": "SELECT * FROM `project.dataset.table` LIMIT 1000"},
         ],
         "fetch": lambda p: pipeline.fetch_bigquery_data(p["project_id"], p["query"]),
+        "test": lambda p: pipeline.test_bigquery(p["project_id"]),
     },
     "sql_database": {
         "label": "SQL database (Postgres / MySQL / Cloud SQL / AlloyDB)",
@@ -77,6 +80,7 @@ CONNECTORS = {
             {"name": "query", "label": "SQL query", "type": "textarea", "default": "SELECT * FROM orders LIMIT 1000"},
         ],
         "fetch": lambda p: pipeline.read_from_sql(p["connection_string"], p["query"]),
+        "test": lambda p: pipeline.test_sql(p["connection_string"]),
     },
     "rest_api": {
         "label": "REST API (JSON)",
@@ -93,6 +97,7 @@ CONNECTORS = {
             p["url"], method=p["method"], headers_json=p.get("headers_json", ""),
             body_json=p.get("body_json", ""), json_path=p.get("json_path", ""),
         ),
+        "test": lambda p: pipeline.test_rest_api(p["url"], headers_json=p.get("headers_json", "")),
     },
     "google_sheets": {
         "label": "Google Sheets",
@@ -107,5 +112,6 @@ CONNECTORS = {
             p["sheet_url_or_id"], worksheet_name=p.get("worksheet_name", "Sheet1"),
             service_account_json=p.get("service_account_json", ""),
         ),
+        "test": lambda p: pipeline.test_google_sheets(p["sheet_url_or_id"], service_account_json=p.get("service_account_json", "")),
     },
 }
