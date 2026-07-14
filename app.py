@@ -157,7 +157,28 @@ def render_live_pipeline_demo():
                 key = f"conn_{selected_key}_{f['name']}"
                 with target:
                     if f["type"] == "password":
-                        params[f["name"]] = st.text_input(f["label"], type="password", key=key)
+                        use_secret = st.checkbox(
+                            f"{f['label']}: load from Secret Manager",
+                            key=f"{key}_use_secret",
+                            help="Enterprise pattern: store this credential once in Secret Manager instead of retyping it each session.",
+                        )
+                        if use_secret:
+                            secret_ref = st.text_input(
+                                f"{f['label']} — Secret Manager resource name", key=f"{key}_secret_ref",
+                                placeholder="projects/PROJECT_ID/secrets/SECRET_NAME/versions/latest",
+                            )
+                            try:
+                                params[f["name"]] = pipeline.get_secret(secret_ref) if secret_ref else ""
+                                if secret_ref:
+                                    st.caption("Loaded from Secret Manager.")
+                            except ImportError:
+                                st.error("Run `pip install google-cloud-secret-manager` to use this.")
+                                params[f["name"]] = ""
+                            except Exception as e:
+                                st.error(f"Could not load secret: {e}")
+                                params[f["name"]] = ""
+                        else:
+                            params[f["name"]] = st.text_input(f["label"], type="password", key=key)
                     elif f["type"] == "number":
                         params[f["name"]] = st.number_input(f["label"], value=f.get("default", 0), key=key)
                     elif f["type"] == "textarea":
